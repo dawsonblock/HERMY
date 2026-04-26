@@ -9,6 +9,7 @@ expected functions and that policy integration is available.
 
 import inspect
 import importlib
+from types import SimpleNamespace
 
 
 def test_bridge_importable(tmp_path, monkeypatch):
@@ -49,3 +50,50 @@ def test_bridge_rejects_write_outside_workspace(monkeypatch):
 
     assert response["ok"] is False
     assert "workspace" in response["error"]
+
+
+def test_bridge_rejects_read_outside_workspace(monkeypatch):
+    monkeypatch.syspath_prepend(".")
+    module = importlib.import_module("cube_bridge.cube_mcp_server", package="integration")
+
+    response = module.cube_read_file(sandbox_id="sbx-1", path="/etc/passwd")
+
+    assert response["ok"] is False
+    assert "workspace" in response["error"]
+
+
+def test_python_fallback_writes_scratch_under_workspace(monkeypatch):
+    monkeypatch.syspath_prepend(".")
+    monkeypatch.setenv("CUBE_WORKSPACE_DIR", "/workspace")
+    module = importlib.import_module("cube_bridge.cube_mcp_server", package="integration")
+
+    class FakeCommands:
+        def __init__(self):
+            self.commands = []
+
+        def run(self, command, timeout=None):
+            self.commands.append((command, timeout))
+            return SimpleNamespace(stdout="ok", stderr="", exit_code=0)
+
+    class FakeFiles:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, path, content):
+            self.writes.append((path, content))
+
+    class FakeSandbox:
+        sandbox_id = "sbx-1"
+
+        def __init__(self):
+            self.commands = FakeCommands()
+            self.files = FakeFiles()
+
+    client = module.CubeSandboxClient(template_id="tpl", sandbox_cls=SimpleNamespace(create=lambda **_: FakeSandbox()))
+    client.cube_create()
+    response = client.cube_run_python("sbx-1", "print('ok')", timeout_seconds=10)
+
+    sandbox = client._sandboxes["sbx-1"]
+    assert response["ok"] is True
+    assert sandbox.files.writes[0][0].startswith("/workspace/.hermy/")
+    assert sandbox.commands.commands[0][0] == "mkdir -p /workspace/.hermy"

@@ -1,152 +1,268 @@
 # HERMY
 
-## Hermes, CUA and CubeSandbox Integration
+HERMY is an integration scaffold for running Hermes with two separate
+execution backends:
 
-This repository bundles three upstream projects—**Hermes Agent**, **CUA**
-and **CubeSandbox**—plus a small integration layer intended to stitch
-them together into a cohesive stack. The upstream source trees are
-present in this archive, but they still remain separate services with
-clear boundaries. The local glue code, configuration templates and
-scripts provide the intended control path between them.
+- CUA for GUI and computer-use actions.
+- CubeSandbox, through an E2B-compatible API, for code and shell execution.
 
-## Overview
+This repository is not a fully merged fork of Hermes, CUA, or CubeSandbox.
+It is a bundled source archive plus a small local integration layer. The
+integration code lives in `cube_bridge/`, `controller/`, `config/`, `scripts/`,
+and `tests/`.
 
-* **Hermes Agent** acts as the orchestrator and planner.  It is not
-  included here; you should install it via `pip install hermes-agent`
-  and run it independently.  Hermes communicates with external
-  services through the [MCP protocol](https://github.com/intentionet/mcp).
+## What Is Vendored
 
-* **CUA** (Computer Use Automation) provides
-  screenshot, click, typing and other GUI operations via a
-  WebSocket/HTTP interface.  This repository assumes you install
-  `cua-computer-server` yourself and exposes the server on localhost.
+The archive includes upstream source trees:
 
-* **CubeSandbox** supplies hardened, KVM‑backed sandboxes for
-  executing untrusted commands.  The sandbox exposes an
-  [E2B‑compatible](https://e2b.dev/) API.  You must deploy
-  CubeSandbox on a Linux host with virtualization support.  This
-  integration does not build or install Cube for you; it only
-  provides a small bridge to translate between MCP and the E2B API.
+- `hermes-agent-2026.4.23/`
+- `cua-main/`
+- `CubeSandbox-master/`
 
-The pieces are joined together by the `cube_mcp_server.py` script,
-which implements a minimal MCP server backed by the `e2b-code-interpreter`
-client library.  Hermes can call this server to create, run and
-destroy Cube sandboxes.  A simple policy layer and event logger are
-included to demonstrate how you might enforce safety rules and record
-activity.
+Treat those directories as upstream snapshots. HERMY packaging only installs
+the local integration packages:
 
-## Directory layout
+- `cube_bridge`
+- `controller`
 
-```
-integration/
-  README.md               # this file
-  cube_bridge/
-    cube_mcp_server.py    # MCP bridge for CubeSandbox
-    requirements.txt      # Python dependencies for the bridge
-  config/
-    hermes_config_template.yaml  # sample Hermes configuration
-    hermes_prompt.md      # prompt injection rules and operator instructions
-  controller/
-    runtime_controller.py # skeleton for a runtime controller
-    policy.py             # example policy enforcement module
-    event_logger.py       # simple JSONL event logger
-  scripts/
-    start_cua_server.sh   # helper to run CUA computer server
-    start_cube_api.sh     # hint for starting CubeSandbox API
-  tests/
-    test_cube_bridge.py   # minimal tests for the bridge
-    test_policy.py        # tests for the policy module
+Hermes can be run from the vendored source tree or installed separately. CUA
+source is vendored, but the CUA MCP server must run as its own process.
+CubeSandbox source is vendored, but live Cube execution requires a real
+Linux/KVM Cube deployment or another E2B-compatible Cube API endpoint.
+
+## Architecture
+
+```text
+User / Hermes
+  -> CUA MCP HTTP server for GUI actions
+  -> HERMY Cube MCP stdio bridge
+       -> RuntimeController
+       -> Policy
+       -> Cube/E2B-compatible sandbox API
+       -> /workspace
 ```
 
-The tests are simple and meant as examples; they assume CubeSandbox
-and Hermes are not running.  You can run them with `pytest` after
-installing the dependencies listed in `cube_bridge/requirements.txt`.
+Hermes should connect to CUA directly over HTTP MCP. Hermes should connect to
+Cube through the local HERMY stdio MCP bridge. CUA is GUI-only unless you have
+deliberately isolated it for a broader role. Cube is the only HERMY code and
+shell execution backend.
 
-## Quick start
+## Current Scope
 
-1. **Install CUA and start the server**.  On the machine where you
-   want to control a desktop, run:
+HERMY currently provides:
 
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install "cua-computer-server[mcp]"
-   # Run the server on an isolated desktop, e.g. via VNC or nested X11
-   cua-computer-server \
-     --host 127.0.0.1 --port 8000 \
-     --width 1024 --height 768
-   ```
+- A packageable Cube MCP bridge in `cube_bridge/cube_mcp_server.py`.
+- A `RuntimeController` that routes code operations to Cube and applies policy.
+- A conservative policy layer for command, timeout, output, and workspace path
+  checks.
+- JSONL audit logging with optional fail-closed mode.
+- A Hermes config template for CUA HTTP MCP plus HERMY Cube stdio MCP.
+- Unit tests for the local integration layer.
+- A standalone doctor script for environment checks.
 
-2. **Deploy CubeSandbox**.  Follow the instructions in the
-   `CubeSandbox` repository to deploy the CubeAPI and supporting
-   services.  Make sure you can create and run sandboxes via the
-   E2B Python client:
+HERMY does not provide:
 
-   ```bash
-   python -c "from e2b_code_interpreter import Sandbox; print(Sandbox.create(template='<template-id>').commands.run('echo ok').stdout)"
-   ```
+- A one-command full Hermes, CUA, and Cube launcher.
+- A complete CubeSandbox deployment flow.
+- A production security boundary by itself.
+- Proof that your live CUA desktop or live Cube cluster is healthy.
 
-3. **Install the bridge**.  On the machine where Hermes runs:
+## Install HERMY Integration Package
 
-   ```bash
-   python3 -m venv .venv-bridge
-   source .venv-bridge/bin/activate
-   pip install -r cube_bridge/requirements.txt
-   # Set environment variables for Cube API
-   export E2B_API_URL=http://<cube-api-host>:<port>
-   export E2B_API_KEY=<dummy-key>
-   export CUBE_TEMPLATE_ID=<template-id>
-   python cube_bridge/cube_mcp_server.py
-   ```
+Use Python 3.11 or newer.
 
-   The server will listen on the default MCP port (3641).  You can
-   override the host/port via environment variables:
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[test]"
+```
 
-   ```bash
-   export MCP_HOST=0.0.0.0
-   export MCP_PORT=9000
-   python cube_bridge/cube_mcp_server.py
-   ```
+The install exposes:
 
-4. **Configure Hermes**.  Copy `config/hermes_config_template.yaml`
-   somewhere under your Hermes config path and adjust values for your
-   environment (e.g. the CUA MCP URL, the Cube bridge command and
-   environment variables, timeouts).  Add a top‑level section like:
+```bash
+hermy-cube-mcp
+```
 
-   ```yaml
-   mcp_servers:
-     cua:
-       url: "http://127.0.0.1:8000/mcp"
-     cube:
-       command: "python"
-       args:
-         - "/path/to/integration/cube_bridge/cube_mcp_server.py"
-       env:
-         E2B_API_URL: "http://<cube-api-host>:<port>"
-         E2B_API_KEY: "<dummy-key>"
-         CUBE_TEMPLATE_ID: "<template-id>"
-   terminal:
-     backend: "none"
-   ```
+The doctor is intentionally kept as a standalone source script:
 
-5. **Run Hermes**.  Start Hermes with the modified configuration
-   file and test the integrated environment.  Use CUA for GUI tasks
-   (screenshots, clicks, typing) and Cube for code execution and
-   untrusted commands.
+```bash
+python scripts/hermy_doctor.py --help
+```
 
-## Security considerations
+## Start CUA Server
 
-This integration intentionally separates concerns:
+CUA must run separately and expose MCP over HTTP. The helper script starts
+`cua-computer-server` with MCP enabled:
 
-* Hermes never runs shell commands directly on your host.  It uses
-  CubeSandbox for untrusted execution.
-* CUA controls a desktop environment via a remote display (VNC or
-  nested X11) rather than your primary machine.  Use a VM or
-  container to host the CUA server for extra safety.
-* The `policy.py` module shows how to enforce simple rules such as
-  blocking certain commands and restricting file writes.  Adapt it to
-  your needs before running any real workloads.
+```bash
+scripts/start_cua_server.sh
+```
 
-Always audit the commands Hermes generates and the environment
-variables passed to CubeSandbox.  This integration is provided as an
-example; you are responsible for hardening it for production use.
+Defaults:
+
+```bash
+CUA_HOST=127.0.0.1
+CUA_PORT=8000
+CUA_WIDTH=1280
+CUA_HEIGHT=720
+```
+
+CUA should control a disposable or isolated desktop session when safety
+matters. HERMY does not make your host desktop safe.
+
+## Start Or Point To Cube
+
+Cube live execution requires a running CubeSandbox deployment with KVM support,
+or another E2B-compatible Cube API.
+
+Set the required environment variables:
+
+```bash
+export E2B_API_URL=http://<cube-api-host>:3000
+export E2B_API_KEY=dummy
+export CUBE_TEMPLATE_ID=<template-id>
+export CUBE_WORKSPACE_DIR=/workspace
+```
+
+`scripts/start_cube_api.sh` is not a Cube deployment tool. It refuses to run by
+default because CubeAPI alone is not enough. For local CubeAPI component
+development only:
+
+```bash
+export HERMY_ALLOW_DEV_CUBE_API=1
+export CUBE_API_REPO=/path/to/CubeSandbox-master/CubeAPI
+scripts/start_cube_api.sh
+```
+
+You still need CubeMaster, Cubelet, networking, templates, and KVM for real
+sandbox execution.
+
+## Run Doctor
+
+After installing dependencies and exporting Cube variables:
+
+```bash
+python scripts/hermy_doctor.py
+```
+
+To include TCP reachability checks for CUA and Cube:
+
+```bash
+python scripts/hermy_doctor.py --live \
+  --cua-url http://127.0.0.1:8000/mcp \
+  --cube-url "$E2B_API_URL"
+```
+
+The live checks only verify basic TCP reachability. They do not create a Cube
+sandbox or prove that CUA tools execute correctly.
+
+## Run Tests
+
+```bash
+pytest
+```
+
+These tests are local integration-layer tests. They do not require a live CUA
+server or a live Cube deployment.
+
+## Configure Hermes
+
+Use `config/hermes_config_template.yaml` as the starting point:
+
+```yaml
+mcp_servers:
+  cua:
+    url: "http://127.0.0.1:8000/mcp"
+    timeout: 60
+    connect_timeout: 10
+
+  cube:
+    command: "hermy-cube-mcp"
+    args: []
+    timeout: 120
+    connect_timeout: 10
+    env:
+      E2B_API_URL: "http://127.0.0.1:3000"
+      E2B_API_KEY: "dummy"
+      CUBE_TEMPLATE_ID: "<your-cube-template-id>"
+      CUBE_WORKSPACE_DIR: "/workspace"
+
+terminal:
+  backend: "none"
+```
+
+The important rule is that Hermes local terminal execution stays disabled.
+Shell commands, Python code, and sandbox file operations should go through the
+HERMY Cube MCP bridge.
+
+## Cube MCP Tools
+
+The bridge exposes these tool functions:
+
+- `cube_create`
+- `cube_run_command`
+- `cube_run_python`
+- `cube_read_file`
+- `cube_write_file`
+- `cube_destroy`
+
+Tool responses use a structured shape similar to:
+
+```json
+{
+  "ok": true,
+  "sandbox_id": "sbx-...",
+  "stdout": "...",
+  "stderr": "",
+  "exit_code": 0,
+  "error": null
+}
+```
+
+## Policy Defaults
+
+Policy is intentionally conservative:
+
+- Workspace root defaults to `/workspace`.
+- Reads and writes must remain under the workspace root.
+- Shell control operators are blocked in raw commands.
+- Shell wrapper execution such as `bash -c ...` is blocked.
+- Inline interpreter execution such as `python -c ...` is blocked.
+- Dangerous filesystem commands and flags are blocked.
+- Default timeout is 60 seconds.
+- Maximum timeout is 120 seconds.
+- Maximum file write size is 1,000,000 bytes.
+- Maximum returned text payload is 200,000 bytes.
+
+Override these with:
+
+```bash
+export CUBE_WORKSPACE_DIR=/workspace
+export HERMY_DEFAULT_TIMEOUT_SECONDS=60
+export HERMY_MAX_TIMEOUT_SECONDS=120
+export HERMY_MAX_FILE_WRITE_BYTES=1000000
+export HERMY_MAX_OUTPUT_BYTES=200000
+export CUBE_EVENT_LOG=cube_events.jsonl
+export CUBE_STRICT_AUDIT_LOGGING=0
+```
+
+This policy layer is a baseline, not a complete sandbox security model. The
+real security boundary must come from CubeSandbox or another properly isolated
+execution backend.
+
+## Live Verification Checklist
+
+A live environment is ready only after all of these are true:
+
+- Doctor checks pass via `python scripts/hermy_doctor.py`.
+- CUA MCP HTTP endpoint is reachable.
+- Cube/E2B-compatible API endpoint is reachable.
+- `CUBE_TEMPLATE_ID` points to a valid template.
+- A Cube sandbox can be created outside Hermes with the E2B client.
+- Hermes is configured with `terminal.backend: "none"`.
+- Hermes can list both CUA and Cube MCP tools.
+- A Cube sandbox can write and read a file under `/workspace`.
+- A write outside `/workspace` is rejected.
+
+Until those live checks pass, HERMY should be considered a clean integration
+scaffold, not a working deployed agent runtime.

@@ -109,9 +109,11 @@ class CubeSandboxClient:
             execution = sandbox.run_code(code, timeout=timeout_seconds)
             return self._format_python_result(sandbox_id, execution)
 
-        scratch_path = f"/tmp/{uuid.uuid4().hex}.py"
-        sandbox.files.write(scratch_path, code)
-        result = sandbox.commands.run(f"python {shlex.quote(scratch_path)}", timeout=timeout_seconds)
+        scratch_dir = policy.resolve_workspace_path(".hermy")
+        scratch_path = scratch_dir / f"{uuid.uuid4().hex}.py"
+        sandbox.commands.run(f"mkdir -p {shlex.quote(str(scratch_dir))}", timeout=timeout_seconds)
+        sandbox.files.write(str(scratch_path), code)
+        result = sandbox.commands.run(f"python {shlex.quote(str(scratch_path))}", timeout=timeout_seconds)
         return self._format_command_result(sandbox_id, result)
 
     def cube_read_file(self, sandbox_id: str, path: str) -> dict[str, Any]:
@@ -364,5 +366,11 @@ def run_mcp_server(verbose: bool = False) -> None:
         LOGGER.info("Cube MCP server interrupted")
 
 
+def main() -> None:
+    """Console-script entry point."""
+    verbose = os.environ.get("HERMY_MCP_VERBOSE", "").lower() in {"1", "true", "yes", "on"}
+    run_mcp_server(verbose=verbose)
+
+
 if __name__ == "__main__":
-    run_mcp_server()
+    main()

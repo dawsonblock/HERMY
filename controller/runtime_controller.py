@@ -10,6 +10,8 @@ from typing import Any
 
 from . import event_logger, policy
 
+_CUA_DENIED_OPERATION_TERMS = ("command", "shell", "python", "file", "exec", "terminal")
+
 
 def _utc_now() -> str:
     return datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
@@ -38,6 +40,13 @@ class RuntimeController:
         op = request.get("op")
         if not op:
             return self._error_response("cua", request_id, "missing GUI operation")
+        if self._is_cube_only_operation(str(op)):
+            return self._error_response(
+                "cua",
+                request_id,
+                "CUA is configured for GUI operations only; use Cube for code, shell, and file operations",
+                op=op,
+            )
 
         try:
             result = self._dispatch(self.cua_client, op, request)
@@ -109,12 +118,18 @@ class RuntimeController:
         return results
 
     def _handle_create(self, request_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        timeout = None
+        if request.get("timeout_seconds") is not None:
+            timeout_decision = policy.validate_timeout(request.get("timeout_seconds"))
+            if not timeout_decision.allowed:
+                return self._denied_response(request_id, "create", timeout_decision.reason or "timeout denied")
+            timeout = int(timeout_decision.normalized_value or policy.default_timeout_seconds())
         result = self._dispatch(
             self.cube_client,
             "cube_create",
             {
                 "template_id": request.get("template_id"),
-                "timeout_seconds": request.get("timeout_seconds"),
+                "timeout_seconds": timeout,
                 "metadata": request.get("metadata") or {},
                 "allow_internet_access": request.get("allow_internet_access"),
             },
@@ -137,14 +152,23 @@ class RuntimeController:
         decision = policy.validate_command(request.get("command", ""))
         if not decision.allowed:
             return self._denied_response(request_id, "run_command", decision.reason or "command denied")
+        timeout = policy.validate_timeout(request.get("timeout_seconds"))
+        if not timeout.allowed:
+            return self._denied_response(request_id, "run_command", timeout.reason or "timeout denied")
+        cwd = request.get("cwd")
+        if cwd:
+            cwd_decision = policy.validate_read_path(cwd)
+            if not cwd_decision.allowed:
+                return self._denied_response(request_id, "run_command", cwd_decision.reason or "cwd denied")
+            cwd = cwd_decision.normalized_value
         result = self._dispatch(
             self.cube_client,
             "cube_run_command",
             {
                 "sandbox_id": sandbox_id,
                 "command": decision.normalized_value,
-                "cwd": request.get("cwd"),
-                "timeout_seconds": request.get("timeout_seconds"),
+                "cwd": cwd,
+                "timeout_seconds": int(timeout.normalized_value or policy.default_timeout_seconds()),
             },
         )
         warnings = self._audit(
@@ -158,13 +182,16 @@ class RuntimeController:
         code = request.get("code", "")
         if not code or not str(code).strip():
             return self._denied_response(request_id, "run_python", "python code cannot be empty")
+        timeout = policy.validate_timeout(request.get("timeout_seconds"))
+        if not timeout.allowed:
+            return self._denied_response(request_id, "run_python", timeout.reason or "timeout denied")
         result = self._dispatch(
             self.cube_client,
             "cube_run_python",
             {
                 "sandbox_id": sandbox_id,
                 "code": code,
-                "timeout_seconds": request.get("timeout_seconds"),
+                "timeout_seconds": int(timeout.normalized_value or policy.default_timeout_seconds()),
             },
         )
         warnings = self._audit(
@@ -178,14 +205,17 @@ class RuntimeController:
         path = request.get("path")
         if not path:
             return self._denied_response(request_id, "read_file", "path is required")
+        decision = policy.validate_read_path(path)
+        if not decision.allowed:
+            return self._denied_response(request_id, "read_file", decision.reason or "read denied")
         result = self._dispatch(
             self.cube_client,
             "cube_read_file",
-            {"sandbox_id": sandbox_id, "path": path},
+            {"sandbox_id": sandbox_id, "path": decision.normalized_value},
         )
         warnings = self._audit(
             event_type="cube_read_file",
-            data={"request_id": request_id, "sandbox_id": sandbox_id, "path": path},
+            data={"request_id": request_id, "sandbox_id": sandbox_id, "path": decision.normalized_value},
         )
         return self._success_response(request_id, "read_file", result, warnings)
 
@@ -195,13 +225,17 @@ class RuntimeController:
         decision = policy.validate_write_path(path)
         if not decision.allowed:
             return self._denied_response(request_id, "write_file", decision.reason or "write denied")
+        content = request.get("content", "")
+        content_decision = policy.validate_file_content(str(content))
+        if not content_decision.allowed:
+            return self._denied_response(request_id, "write_file", content_decision.reason or "content denied")
         result = self._dispatch(
             self.cube_client,
             "cube_write_file",
             {
                 "sandbox_id": sandbox_id,
                 "path": decision.normalized_value,
-                "content": request.get("content", ""),
+                "content": str(content),
             },
         )
         warnings = self._audit(
@@ -254,6 +288,10 @@ class RuntimeController:
 
         raise RuntimeError(f"backend client does not implement {op}")
 
+    def _is_cube_only_operation(self, op: str) -> bool:
+        lowered = op.lower()
+        return any(term in lowered for term in _CUA_DENIED_OPERATION_TERMS)
+
     def _require_sandbox_id(self, request: dict[str, Any]) -> str:
         sandbox_id = request.get("sandbox_id")
         if not sandbox_id:
@@ -285,6 +323,9 @@ class RuntimeController:
             response.setdefault("ok", True)
         else:
             response = {"ok": True, "result": result}
+        for key in ("stdout", "stderr", "content"):
+            if isinstance(response.get(key), str):
+                response[key] = policy.truncate_text(response[key])
         response.update(
             {
                 "backend": "cube",

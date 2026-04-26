@@ -36,3 +36,32 @@ def test_workspace_resolution_uses_relative_to():
     decision = policy.validate_write_path("/workspace/project/file.txt")
     assert decision.allowed
     assert decision.normalized_value == "/workspace/project/file.txt"
+
+
+def test_read_policy_stays_inside_workspace():
+    os.environ["CUBE_WORKSPACE_DIR"] = "/workspace"
+    assert policy.is_read_allowed("/workspace/input.txt")
+    assert not policy.is_read_allowed("/etc/hosts")
+
+
+def test_timeout_policy_enforces_maximum(monkeypatch):
+    monkeypatch.setenv("HERMY_DEFAULT_TIMEOUT_SECONDS", "20")
+    monkeypatch.setenv("HERMY_MAX_TIMEOUT_SECONDS", "30")
+
+    assert policy.validate_timeout(None).normalized_value == "20"
+    assert policy.validate_timeout(30).allowed
+    assert not policy.validate_timeout(31).allowed
+
+
+def test_file_content_policy_enforces_size(monkeypatch):
+    monkeypatch.setenv("HERMY_MAX_FILE_WRITE_BYTES", "3")
+
+    assert policy.validate_file_content("abc").allowed
+    assert not policy.validate_file_content("abcd").allowed
+
+
+def test_truncate_text_uses_byte_limit(monkeypatch):
+    monkeypatch.setenv("HERMY_MAX_OUTPUT_BYTES", "4")
+
+    assert policy.truncate_text("abcdef").startswith("abcd")
+    assert "HERMY output truncated" in policy.truncate_text("abcdef")

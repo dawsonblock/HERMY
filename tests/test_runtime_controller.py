@@ -52,6 +52,7 @@ def test_controller_routes_gui_request(monkeypatch):
 
 def test_controller_routes_code_request(monkeypatch):
     monkeypatch.setattr("controller.runtime_controller.event_logger.log_event", lambda *args, **kwargs: True)
+    monkeypatch.setenv("HERMY_DEFAULT_TIMEOUT_SECONDS", "60")
     cube = FakeCubeClient()
     controller = RuntimeController(cua_client=None, cube_client=cube)
 
@@ -64,7 +65,7 @@ def test_controller_routes_code_request(monkeypatch):
     assert ran["stdout"] == "ok"
 
     assert ("cube_create", {"template_id": "tpl-1", "metadata": {}}) in cube.calls
-    assert ("cube_run_command", {"sandbox_id": "sbx-1", "command": "echo ok"}) in cube.calls
+    assert ("cube_run_command", {"sandbox_id": "sbx-1", "command": "echo ok", "timeout_seconds": 60}) in cube.calls
 
 
 def test_controller_rejects_write_outside_workspace(monkeypatch):
@@ -77,6 +78,40 @@ def test_controller_rejects_write_outside_workspace(monkeypatch):
 
     assert response["ok"] is False
     assert "workspace" in response["error"]
+
+
+def test_controller_rejects_read_outside_workspace(monkeypatch):
+    monkeypatch.setattr("controller.runtime_controller.event_logger.log_event", lambda *args, **kwargs: True)
+    controller = RuntimeController(cua_client=None, cube_client=FakeCubeClient())
+
+    response = controller.handle_code_request({"op": "read_file", "sandbox_id": "sbx-1", "path": "/etc/passwd"})
+
+    assert response["ok"] is False
+    assert "workspace" in response["error"]
+
+
+def test_controller_rejects_cua_code_operation(monkeypatch):
+    monkeypatch.setattr("controller.runtime_controller.event_logger.log_event", lambda *args, **kwargs: True)
+    controller = RuntimeController(cua_client=FakeCuaClient(), cube_client=FakeCubeClient())
+
+    response = controller.handle_gui_request({"op": "run_command", "command": "echo no"})
+
+    assert response["ok"] is False
+    assert response["backend"] == "cua"
+    assert "GUI operations only" in response["error"]
+
+
+def test_controller_rejects_timeout_above_policy(monkeypatch):
+    monkeypatch.setattr("controller.runtime_controller.event_logger.log_event", lambda *args, **kwargs: True)
+    monkeypatch.setenv("HERMY_MAX_TIMEOUT_SECONDS", "30")
+    controller = RuntimeController(cua_client=None, cube_client=FakeCubeClient())
+
+    response = controller.handle_code_request(
+        {"op": "run_command", "sandbox_id": "sbx-1", "command": "echo ok", "timeout_seconds": 31}
+    )
+
+    assert response["ok"] is False
+    assert "timeout exceeds maximum" in response["error"]
 
 
 def test_controller_requires_sandbox_id(monkeypatch):

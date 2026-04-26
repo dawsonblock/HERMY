@@ -38,6 +38,10 @@ _DANGEROUS_PATTERNS = (
     re.compile(r"(^|\s)chmod(\s|$).*(-R|--recursive).*(\s/|\s\*)"),
     re.compile(r"(^|\s)chown(\s|$).*(-R|--recursive).*(\s/|\s\*)"),
 )
+_DEFAULT_TIMEOUT_SECONDS = 60
+_MAX_TIMEOUT_SECONDS = 120
+_MAX_FILE_WRITE_BYTES = 1_000_000
+_MAX_OUTPUT_BYTES = 200_000
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,33 @@ def workspace_root() -> Path:
     """Return the configured workspace root."""
     root = os.environ.get("CUBE_WORKSPACE_DIR", "/workspace")
     return Path(root).expanduser().resolve(strict=False)
+
+
+def _positive_int_from_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def default_timeout_seconds() -> int:
+    return _positive_int_from_env("HERMY_DEFAULT_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT_SECONDS)
+
+
+def max_timeout_seconds() -> int:
+    return _positive_int_from_env("HERMY_MAX_TIMEOUT_SECONDS", _MAX_TIMEOUT_SECONDS)
+
+
+def max_file_write_bytes() -> int:
+    return _positive_int_from_env("HERMY_MAX_FILE_WRITE_BYTES", _MAX_FILE_WRITE_BYTES)
+
+
+def max_output_bytes() -> int:
+    return _positive_int_from_env("HERMY_MAX_OUTPUT_BYTES", _MAX_OUTPUT_BYTES)
 
 
 def resolve_workspace_path(path: str) -> Path:
@@ -120,6 +151,56 @@ def validate_write_path(path: str) -> PolicyDecision:
     return PolicyDecision(True, normalized_value=str(resolved))
 
 
+def validate_read_path(path: str) -> PolicyDecision:
+    """Validate a sandbox read target and normalize it."""
+    if not path or not path.strip():
+        return PolicyDecision(False, "path cannot be empty")
+
+    try:
+        resolved = resolve_workspace_path(path)
+    except (OSError, RuntimeError, ValueError):
+        return PolicyDecision(False, "read must stay under the workspace root")
+
+    return PolicyDecision(True, normalized_value=str(resolved))
+
+
+def validate_timeout(timeout_seconds: int | None) -> PolicyDecision:
+    """Validate and normalize an operation timeout."""
+    timeout = default_timeout_seconds() if timeout_seconds is None else timeout_seconds
+    try:
+        timeout = int(timeout)
+    except (TypeError, ValueError):
+        return PolicyDecision(False, "timeout must be an integer number of seconds")
+
+    if timeout <= 0:
+        return PolicyDecision(False, "timeout must be positive")
+
+    maximum = max_timeout_seconds()
+    if timeout > maximum:
+        return PolicyDecision(False, f"timeout exceeds maximum of {maximum} seconds")
+
+    return PolicyDecision(True, normalized_value=str(timeout))
+
+
+def validate_file_content(content: str) -> PolicyDecision:
+    """Validate file write size."""
+    size = len(content.encode("utf-8"))
+    maximum = max_file_write_bytes()
+    if size > maximum:
+        return PolicyDecision(False, f"file content exceeds maximum of {maximum} bytes")
+    return PolicyDecision(True, normalized_value=str(size))
+
+
+def truncate_text(value: str, *, limit: int | None = None) -> str:
+    """Trim large tool payloads to the configured output byte limit."""
+    maximum = max_output_bytes() if limit is None else limit
+    encoded = value.encode("utf-8")
+    if len(encoded) <= maximum:
+        return value
+    clipped = encoded[:maximum].decode("utf-8", errors="ignore")
+    return clipped + "\n[HERMY output truncated]\n"
+
+
 def is_command_allowed(cmd: str) -> bool:
     """Backward-compatible boolean wrapper around ``validate_command``."""
     return validate_command(cmd).allowed
@@ -130,12 +211,26 @@ def is_write_allowed(path: str) -> bool:
     return validate_write_path(path).allowed
 
 
+def is_read_allowed(path: str) -> bool:
+    """Backward-compatible boolean wrapper around ``validate_read_path``."""
+    return validate_read_path(path).allowed
+
+
 __all__ = [
     "PolicyDecision",
+    "default_timeout_seconds",
     "is_command_allowed",
+    "is_read_allowed",
     "is_write_allowed",
+    "max_file_write_bytes",
+    "max_output_bytes",
+    "max_timeout_seconds",
     "resolve_workspace_path",
+    "truncate_text",
     "validate_command",
+    "validate_file_content",
+    "validate_read_path",
+    "validate_timeout",
     "validate_write_path",
     "workspace_root",
 ]

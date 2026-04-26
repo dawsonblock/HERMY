@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
-# Simple helper script to run the CUA computer server with sensible
-# defaults.  Adjust the CUA_HOST, CUA_PORT, CUA_WIDTH and CUA_HEIGHT
-# environment variables to suit your environment.  See the CUA
-# documentation for additional options.
+# Helper script to run the CUA computer server with MCP enabled.
+# CUA should be treated as the GUI/computer-use backend. Do not use
+# it for shell/code execution unless you run it in a deliberately
+# isolated desktop environment.
 
 set -euo pipefail
 

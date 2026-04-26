@@ -2,3 +2,6 @@
 __pycache__/
 .pytest_cache/
 cube_events.jsonl
+*.egg-info/
+build/
+dist/
