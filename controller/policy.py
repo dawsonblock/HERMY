@@ -1,10 +1,4 @@
-"""Policy enforcement helpers for Cube sandbox operations.
-
-The integration layer should expose structured operations such as
-``run_command``, ``run_python``, ``read_file`` and ``write_file``.
-This module provides conservative validation for those operations so
-the runtime can reject risky requests before they reach CubeSandbox.
-"""
+"""Policy enforcement helpers for Cube sandbox operations."""
 
 from __future__ import annotations
 
@@ -13,6 +7,7 @@ import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 _CONTROL_OPERATOR_PATTERN = re.compile(r"[;&|<>`]|[$][(]|\n|\r")
@@ -33,9 +28,9 @@ _DIRECTLY_BLOCKED_EXECUTABLES = {
 _SHELL_WRAPPERS = {"sh", "bash", "zsh", "dash", "fish", "ksh"}
 _INLINE_INTERPRETERS = {"python", "python3", "python3.11", "node", "perl", "ruby", "php"}
 _DANGEROUS_PATTERNS = (
-    re.compile(r"(^|\s)(/bin/)?rm(\s|$).*(-r|-rf|-fr|--recursive)"),
+    re.compile(r"(^|\s)(/bin/)?rm(\s|$).*(-r|-rf|-fr|--recursive).*(\s/|\s/\*|\s\*)"),
     re.compile(r"(^|\s)find(\s|$).*(-delete)(\s|$)"),
-    re.compile(r"(^|\s)chmod(\s|$).*(-R|--recursive).*(\s/|\s\*)"),
+    re.compile(r"(^|\s)chmod(\s|$).*(-R|--recursive).*(\s777\s/|\s/|\s\*)"),
     re.compile(r"(^|\s)chown(\s|$).*(-R|--recursive).*(\s/|\s\*)"),
 )
 _DEFAULT_TIMEOUT_SECONDS = 60
@@ -48,7 +43,8 @@ _MAX_OUTPUT_BYTES = 200_000
 class PolicyDecision:
     allowed: bool
     reason: str | None = None
-    normalized_value: str | None = None
+    normalized_value: Any = None
+    truncated: bool = False
 
 
 def workspace_root() -> Path:
@@ -84,84 +80,130 @@ def max_output_bytes() -> int:
     return _positive_int_from_env("HERMY_MAX_OUTPUT_BYTES", _MAX_OUTPUT_BYTES)
 
 
-def resolve_workspace_path(path: str) -> Path:
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
+
+
+def validate_allow_internet(allow_internet: bool | None) -> PolicyDecision:
+    """Validate requested sandbox internet access."""
+    requested = bool(allow_internet)
+    if requested and not _truthy_env("HERMY_ALLOW_INTERNET"):
+        return PolicyDecision(False, "internet access requires HERMY_ALLOW_INTERNET=1")
+    return PolicyDecision(True, normalized_value=requested)
+
+
+def validate_workspace_path(path: str) -> PolicyDecision:
     """Resolve ``path`` and ensure it stays inside the workspace root."""
+    if not path or not str(path).strip():
+        return PolicyDecision(False, "path cannot be empty")
+
     root = workspace_root()
-    target = Path(path).expanduser()
-    if not target.is_absolute():
-        target = root / target
-    resolved = target.resolve(strict=False)
-    resolved.relative_to(root)
-    return resolved
-
-
-def validate_command(cmd: str) -> PolicyDecision:
-    """Validate a shell command for the ``run_command`` operation."""
-    if not cmd or not cmd.strip():
-        return PolicyDecision(False, "command cannot be empty")
-
-    if _CONTROL_OPERATOR_PATTERN.search(cmd):
-        return PolicyDecision(False, "shell control operators are not allowed")
-
     try:
-        parts = shlex.split(cmd, posix=True)
-    except ValueError:
-        return PolicyDecision(False, "command could not be parsed safely")
+        target = Path(path).expanduser()
+        if not target.is_absolute():
+            target = root / target
+        resolved = target.resolve(strict=False)
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return PolicyDecision(False, "path must stay under the workspace root")
 
+    return PolicyDecision(True, normalized_value=str(resolved))
+
+
+def resolve_workspace_path(path: str) -> Path:
+    """Backward-compatible Path wrapper around ``validate_workspace_path``."""
+    decision = validate_workspace_path(path)
+    if not decision.allowed:
+        raise ValueError(decision.reason)
+    return Path(str(decision.normalized_value))
+
+
+def _executable_name(parts: list[str]) -> str:
+    return Path(parts[0]).name if parts else ""
+
+
+def _has_shell_wrapper(parts: list[str]) -> bool:
+    executable = _executable_name(parts)
+    if executable in _SHELL_WRAPPERS and any(flag in {"-c", "-lc", "-ic"} for flag in parts[1:]):
+        return True
+    if executable == "env" and len(parts) >= 3:
+        wrapped = Path(parts[1]).name
+        return wrapped in _SHELL_WRAPPERS and any(flag in {"-c", "-lc", "-ic"} for flag in parts[2:])
+    return False
+
+
+def _has_inline_interpreter(parts: list[str]) -> bool:
+    executable = _executable_name(parts)
+    return executable in _INLINE_INTERPRETERS and any(flag in {"-c", "-e"} for flag in parts[1:])
+
+
+def _validate_argv_parts(parts: list[str], normalized: str) -> PolicyDecision:
     if not parts:
         return PolicyDecision(False, "command cannot be empty")
 
-    executable = Path(parts[0]).name
-    normalized = " ".join(parts)
-
+    executable = _executable_name(parts)
     if executable in _DIRECTLY_BLOCKED_EXECUTABLES:
         return PolicyDecision(False, f"blocked executable: {executable}")
-
-    if executable in _SHELL_WRAPPERS and any(flag in {"-c", "-lc", "-ic"} for flag in parts[1:]):
+    if _has_shell_wrapper(parts):
         return PolicyDecision(False, "shell wrapper execution is not allowed")
-
-    if executable == "env" and len(parts) >= 3:
-        wrapped = Path(parts[1]).name
-        if wrapped in _SHELL_WRAPPERS and any(flag in {"-c", "-lc", "-ic"} for flag in parts[2:]):
-            return PolicyDecision(False, "shell wrapper execution is not allowed")
-
-    if executable in _INLINE_INTERPRETERS and any(flag in {"-c", "-e"} for flag in parts[1:]):
+    if _has_inline_interpreter(parts):
         return PolicyDecision(False, "inline interpreter execution is not allowed")
-
     if any(token in _DANGEROUS_FLAG_TOKENS for token in parts):
         return PolicyDecision(False, "dangerous command flags are not allowed")
-
     for pattern in _DANGEROUS_PATTERNS:
         if pattern.search(normalized):
             return PolicyDecision(False, "destructive command pattern is blocked")
+    return PolicyDecision(True)
 
+
+def validate_command(command: str | list[str], approved: bool = False) -> PolicyDecision:
+    """Validate a command in argv or shell-string form.
+
+    ``list[str]`` is treated as argv mode and avoids shell parsing. ``str`` is
+    treated as shell mode. Shell control operators require explicit approval,
+    and destructive commands remain blocked even when approved.
+    """
+    if isinstance(command, list):
+        if not command:
+            return PolicyDecision(False, "command argv cannot be empty")
+        if not all(isinstance(part, str) and part for part in command):
+            return PolicyDecision(False, "command argv entries must be non-empty strings")
+        normalized = shlex.join(command)
+        decision = _validate_argv_parts(command, normalized)
+        if not decision.allowed:
+            return decision
+        return PolicyDecision(True, normalized_value=list(command))
+
+    if not isinstance(command, str) or not command.strip():
+        return PolicyDecision(False, "command cannot be empty")
+
+    if _CONTROL_OPERATOR_PATTERN.search(command) and not approved:
+        return PolicyDecision(False, "shell control operators are not allowed without approval")
+
+    try:
+        parts = shlex.split(command, posix=True)
+    except ValueError:
+        return PolicyDecision(False, "command could not be parsed safely")
+
+    normalized = " ".join(parts)
+    decision = _validate_argv_parts(parts, normalized)
+    if not decision.allowed:
+        return decision
     return PolicyDecision(True, normalized_value=normalized)
 
 
 def validate_write_path(path: str) -> PolicyDecision:
-    """Validate a sandbox write target and normalize it."""
-    if not path or not path.strip():
-        return PolicyDecision(False, "path cannot be empty")
-
-    try:
-        resolved = resolve_workspace_path(path)
-    except (OSError, RuntimeError, ValueError):
+    decision = validate_workspace_path(path)
+    if not decision.allowed:
         return PolicyDecision(False, "write must stay under the workspace root")
-
-    return PolicyDecision(True, normalized_value=str(resolved))
+    return decision
 
 
 def validate_read_path(path: str) -> PolicyDecision:
-    """Validate a sandbox read target and normalize it."""
-    if not path or not path.strip():
-        return PolicyDecision(False, "path cannot be empty")
-
-    try:
-        resolved = resolve_workspace_path(path)
-    except (OSError, RuntimeError, ValueError):
+    decision = validate_workspace_path(path)
+    if not decision.allowed:
         return PolicyDecision(False, "read must stay under the workspace root")
-
-    return PolicyDecision(True, normalized_value=str(resolved))
+    return decision
 
 
 def validate_timeout(timeout_seconds: int | None) -> PolicyDecision:
@@ -179,7 +221,7 @@ def validate_timeout(timeout_seconds: int | None) -> PolicyDecision:
     if timeout > maximum:
         return PolicyDecision(False, f"timeout exceeds maximum of {maximum} seconds")
 
-    return PolicyDecision(True, normalized_value=str(timeout))
+    return PolicyDecision(True, normalized_value=timeout)
 
 
 def validate_file_content(content: str) -> PolicyDecision:
@@ -188,31 +230,33 @@ def validate_file_content(content: str) -> PolicyDecision:
     maximum = max_file_write_bytes()
     if size > maximum:
         return PolicyDecision(False, f"file content exceeds maximum of {maximum} bytes")
-    return PolicyDecision(True, normalized_value=str(size))
+    return PolicyDecision(True, normalized_value=size)
+
+
+def truncate_output(text: str, max_bytes: int | None = None) -> tuple[str, bool]:
+    """Trim large tool payloads and report whether truncation happened."""
+    maximum = max_output_bytes() if max_bytes is None else max_bytes
+    encoded = text.encode("utf-8")
+    if len(encoded) <= maximum:
+        return text, False
+    clipped = encoded[:maximum].decode("utf-8", errors="ignore")
+    return clipped + "\n[HERMY output truncated]\n", True
 
 
 def truncate_text(value: str, *, limit: int | None = None) -> str:
-    """Trim large tool payloads to the configured output byte limit."""
-    maximum = max_output_bytes() if limit is None else limit
-    encoded = value.encode("utf-8")
-    if len(encoded) <= maximum:
-        return value
-    clipped = encoded[:maximum].decode("utf-8", errors="ignore")
-    return clipped + "\n[HERMY output truncated]\n"
+    """Backward-compatible wrapper returning only truncated text."""
+    return truncate_output(value, max_bytes=limit)[0]
 
 
-def is_command_allowed(cmd: str) -> bool:
-    """Backward-compatible boolean wrapper around ``validate_command``."""
+def is_command_allowed(cmd: str | list[str]) -> bool:
     return validate_command(cmd).allowed
 
 
 def is_write_allowed(path: str) -> bool:
-    """Backward-compatible boolean wrapper around ``validate_write_path``."""
     return validate_write_path(path).allowed
 
 
 def is_read_allowed(path: str) -> bool:
-    """Backward-compatible boolean wrapper around ``validate_read_path``."""
     return validate_read_path(path).allowed
 
 
@@ -226,11 +270,14 @@ __all__ = [
     "max_output_bytes",
     "max_timeout_seconds",
     "resolve_workspace_path",
+    "truncate_output",
     "truncate_text",
+    "validate_allow_internet",
     "validate_command",
     "validate_file_content",
     "validate_read_path",
     "validate_timeout",
+    "validate_workspace_path",
     "validate_write_path",
     "workspace_root",
 ]

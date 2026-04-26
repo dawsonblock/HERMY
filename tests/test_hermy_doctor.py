@@ -62,6 +62,21 @@ def test_doctor_live_rejects_invalid_url(monkeypatch):
     assert any(check.name == "live:cua_mcp" and check.status == "FAIL" for check in checks)
 
 
+def test_doctor_live_fails_cleanly_on_unreachable_service(monkeypatch):
+    doctor = _load_doctor()
+    monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
+    monkeypatch.setattr(doctor, "REQUIRED_IMPORTS", ())
+    monkeypatch.setattr(doctor, "_check_bridge_tools", lambda: doctor._result("PASS", "bridge:tools", "ok"))
+    args = doctor.build_parser().parse_args(
+        ["--skip-env", "--live", "--cua-url", "http://127.0.0.1:9/mcp", "--cube-url", "http://127.0.0.1:9"]
+    )
+
+    exit_failures = [check for check in doctor.collect_checks(args) if check.status == "FAIL"]
+
+    assert any(check.name == "live:cua_mcp" for check in exit_failures)
+    assert any(check.name == "live:cube_api" for check in exit_failures)
+
+
 def test_doctor_checks_bridge_tool_surface(monkeypatch):
     doctor = _load_doctor()
     monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
@@ -70,3 +85,11 @@ def test_doctor_checks_bridge_tool_surface(monkeypatch):
     check = doctor._check_bridge_tools()
 
     assert check.status == "PASS"
+
+
+def test_doctor_bridge_tools_include_health_list_destroy_all():
+    doctor = _load_doctor()
+
+    assert "cube_health" in doctor.BRIDGE_TOOLS
+    assert "cube_list_sessions" in doctor.BRIDGE_TOOLS
+    assert "cube_destroy_all" in doctor.BRIDGE_TOOLS

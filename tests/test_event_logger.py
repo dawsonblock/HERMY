@@ -10,15 +10,67 @@ import pytest
 from controller import event_logger
 
 
-def test_event_logger_writes_jsonl(tmp_path, monkeypatch):
+def test_event_logger_writes_new_jsonl_shape(tmp_path, monkeypatch):
     log_path = tmp_path / "events.jsonl"
     monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
 
-    assert event_logger.log_event("cube_command", {"sandbox_id": "sbx-1"})
+    assert event_logger.log_event(
+        "cube_command",
+        request_id="req-1",
+        sandbox_id="sbx-1",
+        status="success",
+        duration_ms=12,
+        payload={"command": "echo ok"},
+    )
 
     payload = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert payload["event_id"]
     assert payload["event_type"] == "cube_command"
-    assert payload["data"]["sandbox_id"] == "sbx-1"
+    assert payload["request_id"] == "req-1"
+    assert payload["sandbox_id"] == "sbx-1"
+    assert payload["status"] == "success"
+    assert payload["duration_ms"] == 12
+    assert payload["payload"] == {"command": "echo ok"}
+    assert payload["error"] is None
+
+
+def test_event_logger_infers_top_level_ids_from_payload(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
+
+    event_logger.log_event("cube_command", {"request_id": "req-1", "sandbox_id": "sbx-1"})
+
+    payload = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert payload["request_id"] == "req-1"
+    assert payload["sandbox_id"] == "sbx-1"
+
+
+def test_event_logger_redacts_nested_secret_payload(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
+
+    event_logger.log_event(
+        "cube_create",
+        payload={
+            "api_key": "raw-api-key",
+            "nested": {
+                "token": "raw-token",
+                "password": "raw-password",
+                "headers": [{"authorization": "Bearer raw"}, {"cookie": "raw-cookie"}],
+            },
+        },
+    )
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "raw-api-key" not in text
+    assert "raw-token" not in text
+    assert "raw-password" not in text
+    assert "Bearer raw" not in text
+    assert "raw-cookie" not in text
+    payload = json.loads(text)
+    assert payload["payload"]["api_key"] == "[REDACTED]"
+    assert payload["payload"]["nested"]["token"] == "[REDACTED]"
+    assert payload["payload"]["nested"]["headers"][0]["authorization"] == "[REDACTED]"
 
 
 def test_event_logger_warns_when_write_fails(tmp_path, monkeypatch):

@@ -89,12 +89,11 @@ class CubeSandboxClient:
     def cube_run_command(
         self,
         sandbox_id: str,
-        command: str,
-        cwd: str | None = None,
+        command: str | list[str],
         timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
         sandbox = self._require_sandbox(sandbox_id)
-        final_command = self._build_command(command, cwd=cwd)
+        final_command = shlex.join(command) if isinstance(command, list) else command
         result = sandbox.commands.run(final_command, timeout=timeout_seconds)
         return self._format_command_result(sandbox_id, result)
 
@@ -109,9 +108,15 @@ class CubeSandboxClient:
             execution = sandbox.run_code(code, timeout=timeout_seconds)
             return self._format_python_result(sandbox_id, execution)
 
-        scratch_dir = policy.resolve_workspace_path(".hermy")
+        scratch_dir = policy.resolve_workspace_path(".hermy/tmp")
         scratch_path = scratch_dir / f"{uuid.uuid4().hex}.py"
-        sandbox.commands.run(f"mkdir -p {shlex.quote(str(scratch_dir))}", timeout=timeout_seconds)
+        mkdir_command = f"mkdir -p {shlex.quote(str(scratch_dir))}"
+        mkdir_decision = policy.validate_command(mkdir_command)
+        if not mkdir_decision.allowed:
+            raise RuntimeError(mkdir_decision.reason or "scratch directory command denied")
+        mkdir_result = sandbox.commands.run(mkdir_decision.normalized_value, timeout=timeout_seconds)
+        if getattr(mkdir_result, "exit_code", 0) != 0:
+            raise RuntimeError(getattr(mkdir_result, "stderr", "") or "failed to create HERMY scratch directory")
         sandbox.files.write(str(scratch_path), code)
         result = sandbox.commands.run(f"python {shlex.quote(str(scratch_path))}", timeout=timeout_seconds)
         return self._format_command_result(sandbox_id, result)
@@ -167,12 +172,6 @@ class CubeSandboxClient:
         if sandbox is None:
             raise ValueError(f"unknown sandbox_id: {sandbox_id}")
         return sandbox
-
-    def _build_command(self, command: str, *, cwd: str | None) -> str:
-        if not cwd:
-            return command
-        resolved_cwd = policy.resolve_workspace_path(cwd)
-        return f"cd {shlex.quote(str(resolved_cwd))} && {command}"
 
     def _format_command_result(self, sandbox_id: str, result: Any) -> dict[str, Any]:
         return {
@@ -235,6 +234,14 @@ def set_runtime_controller(controller: RuntimeController | None) -> None:
     _runtime_controller = controller
 
 
+def cube_health() -> dict[str, Any]:
+    return get_runtime_controller().handle_code_request({"op": "health"})
+
+
+def cube_list_sessions() -> dict[str, Any]:
+    return get_runtime_controller().handle_code_request({"op": "list_sessions"})
+
+
 def cube_create(
     template_id: str | None = None,
     timeout_seconds: int | None = None,
@@ -252,9 +259,10 @@ def cube_create(
 
 def cube_run_command(
     sandbox_id: str,
-    command: str,
+    command: str | list[str],
     cwd: str | None = None,
     timeout_seconds: int | None = None,
+    approved_shell: bool = False,
 ) -> dict[str, Any]:
     return get_runtime_controller().handle_code_request(
         {
@@ -263,6 +271,7 @@ def cube_run_command(
             "command": command,
             "cwd": cwd,
             "timeout_seconds": timeout_seconds,
+            "approved_shell": approved_shell,
         }
     )
 
@@ -312,24 +321,31 @@ def cube_destroy(sandbox_id: str) -> dict[str, Any]:
     )
 
 
+def cube_destroy_all() -> dict[str, Any]:
+    return get_runtime_controller().handle_code_request({"op": "destroy_all"})
+
+
 def create_mcp_server(controller: RuntimeController | None = None) -> FastMCP:
     mcp_server = FastMCP(
         "cube",
         instructions=(
-            "Use these tools to create Cube sandboxes, execute commands or Python, "
-            "and read or write sandbox files under /workspace."
+            "Use these tools to inspect HERMY bridge health, create Cube sandboxes, "
+            "execute commands or Python, and read or write sandbox files under /workspace."
         ),
     )
 
     if controller is not None:
         set_runtime_controller(controller)
 
+    mcp_server.tool()(cube_health)
+    mcp_server.tool()(cube_list_sessions)
     mcp_server.tool()(cube_create)
     mcp_server.tool()(cube_run_command)
     mcp_server.tool()(cube_run_python)
     mcp_server.tool()(cube_read_file)
     mcp_server.tool()(cube_write_file)
     mcp_server.tool()(cube_destroy)
+    mcp_server.tool()(cube_destroy_all)
 
     return mcp_server
 

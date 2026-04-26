@@ -199,12 +199,15 @@ HERMY Cube MCP bridge.
 
 The bridge exposes these tool functions:
 
+- `cube_health`
 - `cube_create`
+- `cube_list_sessions`
 - `cube_run_command`
 - `cube_run_python`
 - `cube_read_file`
 - `cube_write_file`
 - `cube_destroy`
+- `cube_destroy_all`
 
 Tool responses use a structured shape similar to:
 
@@ -225,10 +228,15 @@ Policy is intentionally conservative:
 
 - Workspace root defaults to `/workspace`.
 - Reads and writes must remain under the workspace root.
+- Command argv mode is preferred when callers can supply `list[str]`.
 - Shell control operators are blocked in raw commands.
+- Shell control operators require explicit approved-shell mode.
 - Shell wrapper execution such as `bash -c ...` is blocked.
 - Inline interpreter execution such as `python -c ...` is blocked.
 - Dangerous filesystem commands and flags are blocked.
+- `cwd` shell wrapping is disabled until native Cube working-directory support
+  is confirmed.
+- Sandbox internet access is disabled unless `HERMY_ALLOW_INTERNET=1`.
 - Default timeout is 60 seconds.
 - Maximum timeout is 120 seconds.
 - Maximum file write size is 1,000,000 bytes.
@@ -242,6 +250,7 @@ export HERMY_DEFAULT_TIMEOUT_SECONDS=60
 export HERMY_MAX_TIMEOUT_SECONDS=120
 export HERMY_MAX_FILE_WRITE_BYTES=1000000
 export HERMY_MAX_OUTPUT_BYTES=200000
+export HERMY_ALLOW_INTERNET=0
 export CUBE_EVENT_LOG=cube_events.jsonl
 export CUBE_STRICT_AUDIT_LOGGING=0
 ```
@@ -261,6 +270,7 @@ A live environment is ready only after all of these are true:
 - A Cube sandbox can be created outside Hermes with the E2B client.
 - Hermes is configured with `terminal.backend: "none"`.
 - Hermes can list both CUA and Cube MCP tools.
+- Unknown Cube sandbox IDs are rejected before any backend call is made.
 - A Cube sandbox can write and read a file under `/workspace`.
 - A write outside `/workspace` is rejected.
 

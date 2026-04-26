@@ -12,12 +12,15 @@ backends instead of using a local terminal.
    - Window or browser interaction
 
 2. Use HERMY Cube MCP only for code, shell, and sandbox file operations.
+   - `cube_health`
    - `cube_create`
+   - `cube_list_sessions`
    - `cube_run_command`
    - `cube_run_python`
    - `cube_read_file`
    - `cube_write_file`
    - `cube_destroy`
+   - `cube_destroy_all`
 
 3. Do not run shell commands through Hermes' local terminal.
 

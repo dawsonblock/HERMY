@@ -12,7 +12,13 @@ CUA_PORT="${CUA_PORT:-8000}"
 CUA_WIDTH="${CUA_WIDTH:-1280}"
 CUA_HEIGHT="${CUA_HEIGHT:-720}"
 
+command -v cua-computer-server >/dev/null || {
+  echo "cua-computer-server not found. Install/start CUA first." >&2
+  exit 1
+}
+
 echo "Starting CUA computer server on $CUA_HOST:$CUA_PORT (${CUA_WIDTH}x${CUA_HEIGHT})"
+echo "Expected CUA MCP URL: http://$CUA_HOST:$CUA_PORT/mcp"
 
 exec cua-computer-server \
   --host "$CUA_HOST" \

@@ -28,12 +28,15 @@ REQUIRED_IMPORTS = (
 )
 REQUIRED_ENV = ("E2B_API_URL", "E2B_API_KEY", "CUBE_TEMPLATE_ID")
 BRIDGE_TOOLS = (
+    "cube_health",
     "cube_create",
+    "cube_list_sessions",
     "cube_run_command",
     "cube_run_python",
     "cube_read_file",
     "cube_write_file",
     "cube_destroy",
+    "cube_destroy_all",
 )
 
 

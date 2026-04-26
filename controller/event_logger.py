@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as _datetime
 import json
 import os
+import uuid
 import warnings
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,16 @@ from typing import Any
 
 class EventLogError(RuntimeError):
     """Raised when strict audit logging is enabled and a write fails."""
+
+
+_SECRET_KEY_PARTS = (
+    "api_key",
+    "token",
+    "password",
+    "secret",
+    "authorization",
+    "cookie",
+)
 
 
 def _log_path() -> Path:
@@ -24,10 +35,68 @@ def _strict_logging_enabled() -> bool:
     return os.environ.get("CUBE_STRICT_AUDIT_LOGGING", "").lower() in {"1", "true", "yes", "on"}
 
 
+def _is_secret_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(part in lowered for part in _SECRET_KEY_PARTS)
+
+
+def redact_secrets(value: Any) -> Any:
+    """Recursively redact secret-like payload keys."""
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            redacted[key] = "[REDACTED]" if _is_secret_key(str(key)) else redact_secrets(item)
+        return redacted
+    if isinstance(value, list):
+        return [redact_secrets(item) for item in value]
+    if isinstance(value, tuple):
+        return [redact_secrets(item) for item in value]
+    return value
+
+
+def build_event(
+    event_type: str,
+    data: dict[str, Any] | None = None,
+    *,
+    request_id: str | None = None,
+    sandbox_id: str | None = None,
+    status: str = "success",
+    duration_ms: int = 0,
+    payload: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Build a normalized audit event.
+
+    ``data`` is kept as a backward-compatible alias for ``payload``.
+    Top-level request and sandbox IDs are inferred from the payload when
+    explicit values are not provided.
+    """
+    raw_payload = payload if payload is not None else (data or {})
+    request_id = request_id or raw_payload.get("request_id")
+    sandbox_id = sandbox_id or raw_payload.get("sandbox_id")
+    return {
+        "event_id": uuid.uuid4().hex,
+        "timestamp": _datetime.datetime.now(tz=_datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "event_type": event_type,
+        "request_id": request_id,
+        "sandbox_id": sandbox_id,
+        "status": status,
+        "duration_ms": int(duration_ms),
+        "payload": redact_secrets(raw_payload),
+        "error": error,
+    }
+
+
 def log_event(
     event_type: str,
     data: dict[str, Any] | None = None,
     *,
+    request_id: str | None = None,
+    sandbox_id: str | None = None,
+    status: str = "success",
+    duration_ms: int = 0,
+    payload: dict[str, Any] | None = None,
+    error: str | None = None,
     strict: bool | None = None,
 ) -> bool:
     """Append an event to the log file.
@@ -35,11 +104,16 @@ def log_event(
     Returns ``True`` on success. When logging fails it emits a warning;
     with strict mode enabled it also raises ``EventLogError``.
     """
-    entry = {
-        "timestamp": _datetime.datetime.now(tz=_datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
-        "event_type": event_type,
-        "data": data or {},
-    }
+    entry = build_event(
+        event_type,
+        data,
+        request_id=request_id,
+        sandbox_id=sandbox_id,
+        status=status,
+        duration_ms=duration_ms,
+        payload=payload,
+        error=error,
+    )
     path = _log_path()
     should_raise = _strict_logging_enabled() if strict is None else strict
 
@@ -58,4 +132,4 @@ def log_event(
     return True
 
 
-__all__ = ["EventLogError", "log_event"]
+__all__ = ["EventLogError", "build_event", "log_event", "redact_secrets"]
