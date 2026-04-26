@@ -1,0 +1,1 @@
+"""Cube MCP bridge package."""

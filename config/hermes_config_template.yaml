@@ -1,0 +1,53 @@
+### Sample Hermes configuration for CUA and Cube integration
+
+# This file demonstrates how to configure Hermes to use the CUA
+# computer server for GUI/desktop operations and a Cube MCP bridge
+# for code execution.  Adjust the values to match your environment.
+
+# Model configuration
+model:
+  # Use your preferred model provider and model name.  This example
+  # assumes an OpenAI model via the `openai` provider.  You must
+  # supply your own API key via environment variables or a secure
+  # secrets backend.
+  provider: openai
+  model: gpt-4
+
+### MCP server definitions
+mcp_servers:
+  # CUA MCP server exposes computer tools (screenshots, clicks, typing).
+  # You must run `cua-computer-server` separately and expose it
+  # via HTTP/WebSocket.  The `/mcp` path is added automatically by
+  # CUA when you pass the `--mcp` option.
+  cua:
+    url: "http://127.0.0.1:8000/mcp"
+
+  # Cube MCP server is implemented by `cube_mcp_server.py` in this
+  # integration.  Instead of a URL, Hermes runs the bridge as a
+  # subprocess.  You may override host/port via environment variables.
+  cube:
+    command: "python"
+    args:
+      - "/path/to/integration/cube_bridge/cube_mcp_server.py"
+    env:
+      # The URL of your CubeAPI instance.  Replace host/port as needed.
+      E2B_API_URL: "http://127.0.0.1:3000"
+      # API key for Cube.  A dummy value is used here; Cube currently
+      # does not enforce authentication by default.
+      E2B_API_KEY: "dummy"
+      # Template ID for new sandboxes.  You must supply a valid
+      # template ID from your Cube deployment.
+      CUBE_TEMPLATE_ID: "<your-template-id>"
+
+# Terminal configuration
+terminal:
+  # Disable the built‑in terminal to prevent Hermes from executing
+  # commands on the host.  All code execution should go through Cube.
+  backend: "none"
+
+# Memory configuration (optional)
+memory:
+  # Use a local folder for memory persistence if desired.  See
+  # Hermes documentation for other options (e.g. Redis, Postgres).
+  provider: "local"
+  path: "./hermes_memory"
