@@ -21,4 +21,4 @@ def test_config_template_declares_cua_http_and_cube_stdio():
     assert '"code_execution"' not in text
     assert "HERMY_MAX_TIMEOUT_SECONDS" in text
     assert "HERMY_MAX_CODE_BYTES" in text
-    assert "HERMY_REDACT_TOOL_OUTPUT" in text
+    assert "HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION" in text

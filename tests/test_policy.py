@@ -43,13 +43,34 @@ def test_validate_command_plain_safe_string_allows():
     assert decision.normalized_value == "echo ok"
 
 
-def test_validate_command_shell_control_requires_approval():
+def test_validate_command_shell_control_denied_by_default():
     assert not policy.validate_command("echo ok && whoami").allowed
-    assert policy.validate_command("echo ok && whoami", approved=True).allowed
+
+
+def test_validate_command_approved_shell_requires_approval_id():
+    # approved=True without approval_id -> deny
+    assert not policy.validate_command("echo ok && whoami", approved=True).allowed
+    assert not policy.validate_command("echo ok && whoami", approved=True, approval_id=None).allowed
+
+
+def test_validate_command_approved_shell_with_approval_id_allows():
+    # approved=True with non-empty approval_id -> allow harmless composition
+    assert policy.validate_command("echo ok && whoami", approved=True, approval_id="app-123").allowed
+
+
+def test_validate_command_approved_shell_empty_approval_id_denies():
+    # Empty or whitespace approval_id -> deny
+    assert not policy.validate_command("echo ok && whoami", approved=True, approval_id="").allowed
+    assert not policy.validate_command("echo ok && whoami", approved=True, approval_id="   ").allowed
 
 
 def test_validate_command_approved_shell_still_blocks_destructive():
-    assert not policy.validate_command("rm -rf / && echo done", approved=True).allowed
+    # Destructive commands remain denied even with approval_id
+    assert not policy.validate_command("rm -rf / && echo done", approved=True, approval_id="app-123").allowed
+
+
+def test_validate_command_approved_shell_still_blocks_destructive_even_with_approval():
+    assert not policy.validate_command("rm -rf /", approved=True, approval_id="app-123").allowed
 
 
 def test_validate_command_argv_blocks_dangerous_executable():

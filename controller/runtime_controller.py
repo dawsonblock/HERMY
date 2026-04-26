@@ -238,7 +238,8 @@ class RuntimeController:
     def _handle_run_command(self, request_id: str, request: dict[str, Any]) -> dict[str, Any]:
         session = self._require_known_session(request)
         approved = bool(request.get("approved_shell") or request.get("approved"))
-        decision = policy.validate_command(request.get("command", ""), approved=approved)
+        approval_id = request.get("approval_id")
+        decision = policy.validate_command(request.get("command", ""), approved=approved, approval_id=approval_id)
         if not decision.allowed:
             return self._denied_response(request_id, "run_command", decision.reason or "command denied", session.sandbox_id)
         timeout = policy.validate_timeout(request.get("timeout_seconds"))
@@ -260,18 +261,22 @@ class RuntimeController:
                 "sandbox_id": session.sandbox_id,
                 "command": decision.normalized_value,
                 "timeout_seconds": int(timeout.normalized_value),
+                "approval_id": approval_id,
             },
         )
         duration_ms = self._duration_ms(started)
         if self._is_success_result(result):
             self._mark_session_used(session.sandbox_id)
+        audit_payload: dict[str, Any] = {"command": decision.normalized_value}
+        if approved and approval_id:
+            audit_payload["approval_id"] = approval_id
         warnings = self._audit(
             event_type="cube_run_command",
             request_id=request_id,
             sandbox_id=session.sandbox_id,
             status="success" if self._is_success_result(result) else "error",
             duration_ms=duration_ms,
-            payload={"command": decision.normalized_value},
+            payload=audit_payload,
             error=self._result_error(result),
         )
         return self._success_response(request_id, "run_command", result, warnings)

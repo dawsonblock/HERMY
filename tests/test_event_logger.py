@@ -73,10 +73,11 @@ def test_event_logger_redacts_nested_secret_payload(tmp_path, monkeypatch):
     assert payload["payload"]["nested"]["headers"][0]["authorization"] == "[REDACTED]"
 
 
-def test_event_logger_redacts_output_values_when_enabled(tmp_path, monkeypatch):
+def test_event_logger_redacts_output_values_by_default(tmp_path, monkeypatch):
+    """By default, token-like values in free-form strings are redacted."""
     log_path = tmp_path / "events.jsonl"
     monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
-    monkeypatch.setenv("HERMY_REDACT_TOOL_OUTPUT", "1")
+    # No HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION set - should redact by default
 
     event_logger.log_event(
         "cube_run_command",
@@ -91,6 +92,87 @@ def test_event_logger_redacts_output_values_when_enabled(tmp_path, monkeypatch):
     payload = json.loads(text)
     assert "token=[REDACTED]" in payload["payload"]["stdout"]
     assert "password=[REDACTED]" in payload["error"]
+
+
+def test_event_logger_redacts_bearer_tokens_by_default(tmp_path, monkeypatch):
+    """Bearer tokens are redacted in audit logs by default."""
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
+
+    event_logger.log_event(
+        "cube_run_command",
+        payload={"stdout": "Authorization: Bearer sk-test-secret"},
+    )
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "sk-test-secret" not in text
+    payload = json.loads(text)
+    # Redaction pattern converts "Authorization: Bearer ..." to "Authorization=[REDACTED] [REDACTED]"
+    assert "[REDACTED]" in payload["payload"]["stdout"]
+
+
+def test_event_logger_redacts_api_keys_by_default(tmp_path, monkeypatch):
+    """API keys are redacted in audit logs by default."""
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
+
+    event_logger.log_event(
+        "cube_run_command",
+        payload={"stderr": "api_key=sk-abc123abc123abc123"},
+    )
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "sk-abc123abc123abc123" not in text
+
+
+def test_event_logger_redacts_passwords_by_default(tmp_path, monkeypatch):
+    """Passwords are redacted in audit logs by default."""
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
+
+    event_logger.log_event(
+        "cube_run_command",
+        error="password=secret-password",
+    )
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "secret-password" not in text
+
+
+def test_event_logger_unsafe_opt_out_allows_raw_secrets(tmp_path, monkeypatch):
+    """When HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION=1, raw secrets may appear (unsafe)."""
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
+    monkeypatch.setenv("HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION", "1")
+
+    event_logger.log_event(
+        "cube_run_command",
+        payload={"stdout": "token=raw-token-value"},
+    )
+
+    text = log_path.read_text(encoding="utf-8")
+    # In unsafe mode, raw secrets may appear
+    assert "raw-token-value" in text
+
+
+def test_event_logger_secret_keys_always_redacted_even_when_unsafe(tmp_path, monkeypatch):
+    """Secret-like dictionary keys are always redacted regardless of unsafe opt-out."""
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
+    monkeypatch.setenv("HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION", "1")
+
+    event_logger.log_event(
+        "cube_run_command",
+        payload={"api_key": "raw-secret", "nested": {"password": "raw-pass"}},
+    )
+
+    text = log_path.read_text(encoding="utf-8")
+    # Keys should still be redacted even in unsafe mode
+    assert "[REDACTED]" in text
+    # But structured data shows keys were redacted
+    payload = json.loads(text)
+    assert payload["payload"]["api_key"] == "[REDACTED]"
+    assert payload["payload"]["nested"]["password"] == "[REDACTED]"
 
 
 def test_event_logger_warns_when_write_fails(tmp_path, monkeypatch):

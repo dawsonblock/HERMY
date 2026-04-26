@@ -284,3 +284,69 @@ def test_doctor_live_smoke_invokes_cube_smoke(monkeypatch):
     checks = doctor.collect_checks(args)
 
     assert any(check.name == "smoke:cube_create" and check.status == "PASS" for check in checks)
+
+
+def test_doctor_parser_accepts_strict_flag():
+    doctor = _load_doctor()
+    args = doctor.build_parser().parse_args(["--strict"])
+    assert args.strict is True
+
+
+def test_doctor_parser_accepts_json_flag():
+    doctor = _load_doctor()
+    args = doctor.build_parser().parse_args(["--json"])
+    assert args.json_output is True
+
+
+def test_doctor_json_emits_valid_json(monkeypatch, capsys):
+    doctor = _load_doctor()
+    monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
+    monkeypatch.setattr(doctor, "REQUIRED_IMPORTS", ())
+    monkeypatch.setattr(doctor, "_check_bridge_tools", lambda: doctor._result("PASS", "bridge:tools", "ok"))
+    import json
+
+    exit_code = doctor.main(["--skip-env", "--json"])
+    captured = capsys.readouterr()
+
+    # Should be valid JSON array
+    result = json.loads(captured.out)
+    assert isinstance(result, list)
+    assert all("status" in item and "name" in item and "detail" in item for item in result)
+    assert exit_code == 0
+
+
+def test_doctor_strict_returns_nonzero_when_warn_exists(monkeypatch):
+    doctor = _load_doctor()
+    monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
+    monkeypatch.setattr(doctor, "REQUIRED_IMPORTS", ())
+    monkeypatch.setattr(doctor, "_check_bridge_tools", lambda: doctor._result("WARN", "bridge:tools", "some warning"))
+
+    exit_code = doctor.main(["--skip-env", "--strict"])
+
+    assert exit_code == 1
+
+
+def test_doctor_default_does_not_fail_on_warn(monkeypatch):
+    doctor = _load_doctor()
+    monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
+    monkeypatch.setattr(doctor, "REQUIRED_IMPORTS", ())
+    monkeypatch.setattr(doctor, "_check_bridge_tools", lambda: doctor._result("WARN", "bridge:tools", "some warning"))
+
+    exit_code = doctor.main(["--skip-env"])
+
+    # Default mode: WARN does not cause failure exit code
+    assert exit_code == 0
+
+
+def test_doctor_default_does_not_run_live_checks(monkeypatch):
+    """Default tests require no live CUA, live Cube, KVM, Docker, API keys, or network."""
+    doctor = _load_doctor()
+    monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
+    monkeypatch.setattr(doctor, "REQUIRED_IMPORTS", ())
+    monkeypatch.setattr(doctor, "_check_bridge_tools", lambda: doctor._result("PASS", "bridge:tools", "ok"))
+    args = doctor.build_parser().parse_args(["--skip-env"])
+
+    checks = doctor.collect_checks(args)
+
+    assert not any(check.name.startswith("live:") for check in checks)
+    assert not any(check.name.startswith("smoke:") for check in checks)

@@ -269,6 +269,7 @@ def cube_run_command(
     cwd: str | None = None,
     timeout_seconds: int | None = None,
     approved_shell: bool = False,
+    approval_id: str | None = None,
 ) -> dict[str, Any]:
     return get_runtime_controller().handle_code_request(
         {
@@ -278,6 +279,7 @@ def cube_run_command(
             "cwd": cwd,
             "timeout_seconds": timeout_seconds,
             "approved_shell": approved_shell,
+            "approval_id": approval_id,
         }
     )
 

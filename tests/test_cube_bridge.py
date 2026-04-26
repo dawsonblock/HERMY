@@ -209,3 +209,39 @@ def test_command_list_is_converted_to_quoted_shell_command(monkeypatch):
     sandbox = client._sandboxes["sbx-1"]
     assert response["ok"] is True
     assert sandbox.commands.commands == [("echo 'ok && whoami'", 10)]
+
+
+def test_mcp_bridge_forwards_approval_id_to_controller(monkeypatch):
+    """MCP bridge forwards approval_id to RuntimeController."""
+    module = _bridge(monkeypatch)
+
+    class FakeController:
+        def __init__(self):
+            self.requests = []
+
+        def handle_code_request(self, request):
+            self.requests.append(request)
+            return {"ok": True, "operation": request["op"], "approval_id": request.get("approval_id")}
+
+    controller = FakeController()
+    module.set_runtime_controller(controller)
+
+    response = module.cube_run_command(
+        sandbox_id="sbx-1",
+        command="echo ok && whoami",
+        approved_shell=True,
+        approval_id="app-123",
+    )
+
+    assert response["ok"] is True
+    assert controller.requests == [
+        {
+            "op": "run_command",
+            "sandbox_id": "sbx-1",
+            "command": "echo ok && whoami",
+            "cwd": None,
+            "timeout_seconds": None,
+            "approved_shell": True,
+            "approval_id": "app-123",
+        }
+    ]

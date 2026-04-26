@@ -42,8 +42,14 @@ def _strict_logging_enabled() -> bool:
     return os.environ.get("CUBE_STRICT_AUDIT_LOGGING", "").lower() in {"1", "true", "yes", "on"}
 
 
+def output_redaction_disabled() -> bool:
+    """Check if the user has explicitly disabled output redaction (unsafe)."""
+    return os.environ.get("HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION", "").lower() in {"1", "true", "yes", "on"}
+
+
 def output_redaction_enabled() -> bool:
-    return os.environ.get("HERMY_REDACT_TOOL_OUTPUT", "").lower() in {"1", "true", "yes", "on"}
+    """Output redaction is enabled by default for safety."""
+    return not output_redaction_disabled()
 
 
 def _is_secret_key(key: str) -> bool:
@@ -167,6 +173,7 @@ __all__ = [
     "EventLogError",
     "build_event",
     "log_event",
+    "output_redaction_disabled",
     "output_redaction_enabled",
     "redact_secret_text",
     "redact_secrets",

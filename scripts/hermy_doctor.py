@@ -522,6 +522,12 @@ def _print_checks(checks: list[CheckResult]) -> None:
         print(f"{check.status:4} {check.name:{width}}  {check.detail}")
 
 
+def _print_json(checks: list[CheckResult]) -> None:
+    import json
+    result = [{"status": c.status, "name": c.name, "detail": c.detail} for c in checks]
+    print(json.dumps(result))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Check HERMY integration prerequisites.")
     parser.add_argument("--live", action="store_true", help="alias for --live-cua --live-cube")
@@ -535,6 +541,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hermes-config", default=str(DEFAULT_HERMES_CONFIG), help="Hermes config file to validate")
     parser.add_argument("--hermes-tool-registry", action="store_true", help="verify vendored Hermes resolves no host execution tools")
     parser.add_argument("--timeout", type=float, default=3.0, help="connection and smoke-test timeout in seconds")
+    parser.add_argument("--strict", action="store_true", help="turn WARN into failure exit behavior where appropriate")
+    parser.add_argument("--json", action="store_true", dest="json_output", help="print machine-readable JSON array with all checks")
     return parser
 
 
@@ -542,8 +550,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     checks = collect_checks(args)
-    _print_checks(checks)
-    return 1 if any(check.status == "FAIL" for check in checks) else 0
+    if args.json_output:
+        _print_json(checks)
+    else:
+        _print_checks(checks)
+    # Strict mode: treat WARN as failure for exit code (when appropriate)
+    # Missing local dependencies remain FAIL regardless of strict mode
+    # Missing live services when not running live checks: warn only unless strict
+    has_fail = any(check.status == "FAIL" for check in checks)
+    has_warn = any(check.status == "WARN" for check in checks)
+    if has_fail:
+        return 1
+    if args.strict and has_warn:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

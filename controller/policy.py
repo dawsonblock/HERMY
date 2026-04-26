@@ -161,14 +161,18 @@ def _validate_argv_parts(parts: list[str], normalized: str) -> PolicyDecision:
     return PolicyDecision(True)
 
 
-def validate_command(command: str | list[str], approved: bool = False) -> PolicyDecision:
+def validate_command(
+    command: str | list[str],
+    approved: bool = False,
+    approval_id: str | None = None,
+) -> PolicyDecision:
     """Validate a command in argv-list or shell-string form.
 
     ``list[str]`` is preferred because policy validation can inspect explicit
     arguments. The Cube client may still convert it to a quoted shell command
     when the backend lacks a native argv API. ``str`` is treated as shell mode.
-    Shell control operators require explicit approval, and destructive commands
-    remain blocked even when approved.
+    Shell control operators require explicit approval with a valid approval_id,
+    and destructive commands remain blocked even when approved.
     """
     if isinstance(command, list):
         if not command:
@@ -184,8 +188,11 @@ def validate_command(command: str | list[str], approved: bool = False) -> Policy
     if not isinstance(command, str) or not command.strip():
         return PolicyDecision(False, "command cannot be empty")
 
-    if _CONTROL_OPERATOR_PATTERN.search(command) and not approved:
-        return PolicyDecision(False, "shell control operators are not allowed without approval")
+    if _CONTROL_OPERATOR_PATTERN.search(command):
+        if not approved:
+            return PolicyDecision(False, "shell control operators are not allowed without approval")
+        if not approval_id or not str(approval_id).strip():
+            return PolicyDecision(False, "shell control operators require a valid approval_id")
 
     try:
         parts = shlex.split(command, posix=True)

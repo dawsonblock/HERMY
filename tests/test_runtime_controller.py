@@ -221,8 +221,8 @@ def test_output_truncation_sets_flag(monkeypatch):
     assert response["stdout"].startswith("abc")
 
 
-def test_output_redaction_removes_token_like_values(monkeypatch):
-    monkeypatch.setenv("HERMY_REDACT_TOOL_OUTPUT", "1")
+def test_output_redaction_removes_token_like_values_by_default(monkeypatch):
+    """By default, token-like values are redacted from output."""
     cube = FakeCubeClient()
     cube.command_stdout = "token=raw-secret-value"
     controller = _controller(monkeypatch, cube)
@@ -232,6 +232,70 @@ def test_output_redaction_removes_token_like_values(monkeypatch):
 
     assert "raw-secret-value" not in response["stdout"]
     assert "token=[REDACTED]" in response["stdout"]
+
+
+def test_approved_shell_without_approval_id_is_rejected(monkeypatch):
+    """approved_shell=True without approval_id is rejected before client call."""
+    cube = FakeCubeClient()
+    controller = _controller(monkeypatch, cube)
+    controller.handle_code_request({"op": "create", "template_id": "tpl-1"})
+
+    response = controller.handle_code_request(
+        {"op": "run_command", "sandbox_id": "sbx-1", "command": "echo ok && whoami", "approved_shell": True}
+    )
+
+    assert response["ok"] is False
+    assert "approval_id" in response["error"].lower() or "approval" in response["error"].lower()
+    # Should not call cube client when command is denied by policy
+    assert not any(call[0] == "cube_run_command" for call in cube.calls)
+
+
+def test_approved_shell_with_approval_id_allows_command(monkeypatch):
+    """approved_shell=True with valid approval_id allows harmless shell composition."""
+    cube = FakeCubeClient()
+    controller = _controller(monkeypatch, cube)
+    controller.handle_code_request({"op": "create", "template_id": "tpl-1"})
+
+    response = controller.handle_code_request(
+        {
+            "op": "run_command",
+            "sandbox_id": "sbx-1",
+            "command": "echo ok && whoami",
+            "approved_shell": True,
+            "approval_id": "app-123",
+        }
+    )
+
+    assert response["ok"] is True
+    assert any(call[0] == "cube_run_command" for call in cube.calls)
+
+
+def test_approval_id_is_included_in_audit_payload(monkeypatch):
+    """approval_id is included in audit payload when approved shell is used."""
+    events = []
+
+    def capture_event(*args, **kwargs):
+        events.append(kwargs)
+        return True
+
+    monkeypatch.setattr("controller.runtime_controller.event_logger.log_event", capture_event)
+    cube = FakeCubeClient()
+    controller = RuntimeController(cua_client=FakeCuaClient(), cube_client=cube)
+    controller.handle_code_request({"op": "create", "template_id": "tpl-1"})
+
+    controller.handle_code_request(
+        {
+            "op": "run_command",
+            "sandbox_id": "sbx-1",
+            "command": "echo ok && whoami",
+            "approved_shell": True,
+            "approval_id": "app-123",
+        }
+    )
+
+    # Find event by looking for approval_id in payload
+    command_event = next(event for event in events if event.get("payload", {}).get("approval_id"))
+    assert command_event["payload"].get("approval_id") == "app-123"
 
 
 def test_run_python_rejects_code_over_policy_limit(monkeypatch):

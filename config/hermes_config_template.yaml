@@ -28,7 +28,7 @@ mcp_servers:
       HERMY_MAX_FILE_WRITE_BYTES: "1000000"
       HERMY_MAX_OUTPUT_BYTES: "200000"
       HERMY_MAX_CODE_BYTES: "200000"
-      HERMY_REDACT_TOOL_OUTPUT: "0"
+      HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION: "0"
       HERMY_ALLOW_INTERNET: "0"
 
 # Keep host-side Hermes execution disabled. HERMY doctor can verify both this

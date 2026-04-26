@@ -77,7 +77,7 @@ requires Python `>=3.12,<3.14`.
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[test]"
+python -m pip install -e ".[dev]"
 ```
 
 The install exposes:
@@ -225,7 +225,7 @@ pytest
 Recommended clean-environment command:
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q
+scripts/test_local.sh
 ```
 
 The same fallback is available as:
@@ -262,7 +262,7 @@ mcp_servers:
       CUBE_TEMPLATE_ID: "<your-cube-template-id>"
       CUBE_WORKSPACE_DIR: "/workspace"
       HERMY_MAX_CODE_BYTES: "200000"
-      HERMY_REDACT_TOOL_OUTPUT: "0"
+      HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION: "0"
 ```
 
 The important rule is that Hermes host-side execution tools stay disabled.
@@ -309,7 +309,8 @@ Policy is intentionally conservative:
   arguments, but the current Cube client converts it to a quoted shell command
   before calling E2B/Cube because no native argv backend has been confirmed.
 - Shell control operators are blocked in raw commands.
-- Shell control operators require explicit approved-shell mode.
+- Shell control operators require explicit approved-shell mode with a valid
+  `approval_id`.
 - Shell wrapper execution such as `bash -c ...` is blocked.
 - Inline interpreter execution such as `python -c ...` is blocked.
 - Dangerous filesystem commands and flags are blocked.
@@ -321,9 +322,9 @@ Policy is intentionally conservative:
 - Maximum file write size is 1,000,000 bytes.
 - Maximum returned text payload is 200,000 bytes.
 - Maximum Python source payload is 200,000 bytes.
-- Tool output redaction is disabled by default; set
-  `HERMY_REDACT_TOOL_OUTPUT=1` to redact token-like values in stdout, stderr,
-  file content, and tool errors before returning them.
+- Tool output redaction is enabled by default; secrets and token-like values
+  are redacted in audit logs. Set `HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION=1` to
+  opt-out (not recommended).
 
 Override these with:
 
@@ -334,7 +335,7 @@ export HERMY_MAX_TIMEOUT_SECONDS=120
 export HERMY_MAX_FILE_WRITE_BYTES=1000000
 export HERMY_MAX_OUTPUT_BYTES=200000
 export HERMY_MAX_CODE_BYTES=200000
-export HERMY_REDACT_TOOL_OUTPUT=0
+export HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION=0
 export HERMY_ALLOW_INTERNET=0
 export CUBE_EVENT_LOG=cube_events.jsonl
 export CUBE_STRICT_AUDIT_LOGGING=0
