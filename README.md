@@ -1,4 +1,6 @@
-# Hermes, CUA and CubeSandbox Integration
+# HERMY
+
+## Hermes, CUA and CubeSandbox Integration
 
 This repository bundles three upstream projects—**Hermes Agent**, **CUA**
 and **CubeSandbox**—plus a small integration layer intended to stitch
