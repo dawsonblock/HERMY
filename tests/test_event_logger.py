@@ -175,6 +175,62 @@ def test_event_logger_secret_keys_always_redacted_even_when_unsafe(tmp_path, mon
     assert payload["payload"]["nested"]["password"] == "[REDACTED]"
 
 
+def test_event_logger_new_secret_keys_redacted_by_default(tmp_path, monkeypatch):
+    """New secret keys (apikey, passwd, bearer, session) are redacted by default."""
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
+
+    event_logger.log_event(
+        "cube_run_command",
+        payload={
+            "apikey": "raw-apikey",
+            "passwd": "raw-passwd",
+            "bearer": "raw-bearer",
+            "session": "raw-session",
+        },
+    )
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "raw-apikey" not in text
+    assert "raw-passwd" not in text
+    assert "raw-bearer" not in text
+    assert "raw-session" not in text
+    payload = json.loads(text)
+    assert payload["payload"]["apikey"] == "[REDACTED]"
+    assert payload["payload"]["passwd"] == "[REDACTED]"
+    assert payload["payload"]["bearer"] == "[REDACTED]"
+    assert payload["payload"]["session"] == "[REDACTED]"
+
+
+def test_event_logger_new_secret_keys_redacted_even_when_unsafe(tmp_path, monkeypatch):
+    """New secret keys remain redacted even with HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION=1."""
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
+    monkeypatch.setenv("HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION", "1")
+
+    event_logger.log_event(
+        "cube_run_command",
+        payload={
+            "apikey": "raw-apikey",
+            "passwd": "raw-passwd",
+            "bearer": "raw-bearer",
+            "session": "raw-session",
+        },
+    )
+
+    text = log_path.read_text(encoding="utf-8")
+    # These keys should still be redacted even in unsafe mode
+    assert "raw-apikey" not in text
+    assert "raw-passwd" not in text
+    assert "raw-bearer" not in text
+    assert "raw-session" not in text
+    payload = json.loads(text)
+    assert payload["payload"]["apikey"] == "[REDACTED]"
+    assert payload["payload"]["passwd"] == "[REDACTED]"
+    assert payload["payload"]["bearer"] == "[REDACTED]"
+    assert payload["payload"]["session"] == "[REDACTED]"
+
+
 def test_event_logger_warns_when_write_fails(tmp_path, monkeypatch):
     blocked_dir = tmp_path / "blocked"
     blocked_dir.write_text("not a directory", encoding="utf-8")

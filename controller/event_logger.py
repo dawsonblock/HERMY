@@ -18,11 +18,15 @@ class EventLogError(RuntimeError):
 
 _SECRET_KEY_PARTS = (
     "api_key",
+    "apikey",
     "token",
     "password",
+    "passwd",
     "secret",
     "authorization",
+    "bearer",
     "cookie",
+    "session",
 )
 _TOKEN_VALUE_PATTERNS = (
     re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}"),
@@ -84,7 +88,7 @@ def redact_secrets(value: Any, *, redact_values: bool = False) -> Any:
 
 
 def redact_tool_output(value: Any) -> Any:
-    """Redact free-form tool output when HERMY_REDACT_TOOL_OUTPUT is enabled."""
+    """Redact tool output unless HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION is set."""
     if not output_redaction_enabled():
         return value
     return redact_secrets(value, redact_values=True)
