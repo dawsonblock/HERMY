@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import hashlib
 import inspect
 import time
 import uuid
@@ -82,21 +83,27 @@ class RuntimeController:
             return response
 
         duration_ms = self._duration_ms(started)
+        result_ok = self._is_success_result(result)
+        result_error = self._result_error(result)
         warnings = self._audit(
             event_type="cua_request",
             request_id=request_id,
-            status="success",
+            status="success" if result_ok else "error",
             duration_ms=duration_ms,
             payload={"operation": op},
+            error=result_error,
         )
-        return {
-            "ok": True,
+        response = {
+            "ok": result_ok,
             "backend": "cua",
             "request_id": request_id,
             "operation": op,
             "result": result,
             "warnings": warnings,
         }
+        if not result_ok and result_error:
+            response["error"] = event_logger.redact_tool_output(result_error)
+        return response
 
     def handle_code_request(self, request: dict[str, Any]) -> dict[str, Any]:
         request_id = request.get("request_id") or uuid.uuid4().hex
@@ -146,7 +153,18 @@ class RuntimeController:
 
     def cleanup(self) -> list[dict[str, Any]]:
         """Destroy all active Cube sandboxes and return the per-sandbox results."""
-        return self._handle_destroy_all(uuid.uuid4().hex)["results"]
+        request_id = uuid.uuid4().hex
+        try:
+            return self._handle_destroy_all(request_id)["results"]
+        except Exception as exc:  # pragma: no cover - defensive shutdown path
+            warnings = self._audit(
+                event_type="cube_cleanup",
+                request_id=request_id,
+                status="error",
+                payload={"active_session_count": len(self.sessions)},
+                error=str(exc),
+            )
+            return [{"ok": False, "backend": "cube", "operation": "cleanup", "error": str(exc), "warnings": warnings}]
 
     def _handle_health(self, request_id: str) -> dict[str, Any]:
         return {
@@ -263,6 +281,10 @@ class RuntimeController:
         code = request.get("code", "")
         if not code or not str(code).strip():
             return self._denied_response(request_id, "run_python", "python code cannot be empty", session.sandbox_id)
+        code_text = str(code)
+        code_decision = policy.validate_python_code(code_text)
+        if not code_decision.allowed:
+            return self._denied_response(request_id, "run_python", code_decision.reason or "python code denied", session.sandbox_id)
         timeout = policy.validate_timeout(request.get("timeout_seconds"))
         if not timeout.allowed:
             return self._denied_response(request_id, "run_python", timeout.reason or "timeout denied", session.sandbox_id)
@@ -273,7 +295,7 @@ class RuntimeController:
             "cube_run_python",
             {
                 "sandbox_id": session.sandbox_id,
-                "code": code,
+                "code": code_text,
                 "timeout_seconds": int(timeout.normalized_value),
             },
         )
@@ -286,7 +308,10 @@ class RuntimeController:
             sandbox_id=session.sandbox_id,
             status="success" if self._is_success_result(result) else "error",
             duration_ms=duration_ms,
-            payload={"code_bytes": len(str(code).encode("utf-8"))},
+            payload={
+                "code_bytes": code_decision.normalized_value,
+                "code_sha256": hashlib.sha256(code_text.encode("utf-8")).hexdigest(),
+            },
             error=self._result_error(result),
         )
         return self._success_response(request_id, "run_python", result, warnings)
@@ -380,7 +405,29 @@ class RuntimeController:
     def _handle_destroy_all(self, request_id: str) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         for sandbox_id in list(self.sessions):
-            results.append(self._handle_destroy(f"{request_id}:{sandbox_id}", {"sandbox_id": sandbox_id}))
+            child_request_id = f"{request_id}:{sandbox_id}"
+            try:
+                results.append(self._handle_destroy(child_request_id, {"sandbox_id": sandbox_id}))
+            except Exception as exc:
+                warnings = self._audit(
+                    event_type="cube_destroy",
+                    request_id=child_request_id,
+                    sandbox_id=sandbox_id,
+                    status="error",
+                    payload={"cleanup": True},
+                    error=str(exc),
+                )
+                results.append(
+                    {
+                        "ok": False,
+                        "backend": "cube",
+                        "request_id": child_request_id,
+                        "operation": "destroy",
+                        "sandbox_id": sandbox_id,
+                        "error": str(exc),
+                        "warnings": warnings,
+                    }
+                )
         return {
             "ok": all(result.get("ok") is not False for result in results),
             "backend": "cube",
@@ -483,8 +530,9 @@ class RuntimeController:
         else:
             response = {"ok": True, "result": result}
         truncated = bool(response.get("truncated", False))
-        for key in ("stdout", "stderr", "content"):
+        for key in ("stdout", "stderr", "content", "error"):
             if isinstance(response.get(key), str):
+                response[key] = event_logger.redact_tool_output(response[key])
                 response[key], was_truncated = policy.truncate_output(response[key])
                 truncated = truncated or was_truncated
         response.update(
@@ -518,7 +566,7 @@ class RuntimeController:
             "backend": "cube",
             "request_id": request_id,
             "operation": op,
-            "error": reason,
+            "error": event_logger.redact_tool_output(reason),
             "warnings": warnings,
         }
 
@@ -535,7 +583,7 @@ class RuntimeController:
             "backend": backend,
             "request_id": request_id,
             "operation": op,
-            "error": reason,
+            "error": event_logger.redact_tool_output(reason),
             "warnings": [],
         }
 

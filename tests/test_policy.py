@@ -25,6 +25,13 @@ def test_validate_command_argv_allows_safe_command():
     assert decision.normalized_value == ["echo", "ok"]
 
 
+def test_validate_command_argv_is_validated_before_backend_shell_conversion():
+    decision = policy.validate_command(["echo", "ok && whoami"])
+
+    assert decision.allowed
+    assert decision.normalized_value == ["echo", "ok && whoami"]
+
+
 def test_validate_command_empty_argv_denies():
     assert not policy.validate_command([]).allowed
 
@@ -104,6 +111,15 @@ def test_file_content_policy_enforces_size(monkeypatch):
 
     assert policy.validate_file_content("abc").allowed
     assert not policy.validate_file_content("abcd").allowed
+
+
+def test_python_code_policy_enforces_size(monkeypatch):
+    monkeypatch.setenv("HERMY_MAX_CODE_BYTES", "3")
+
+    assert policy.validate_python_code("abc").allowed
+    denied = policy.validate_python_code("abcd")
+    assert not denied.allowed
+    assert "python code exceeds maximum" in denied.reason
 
 
 def test_allow_internet_requires_explicit_env(monkeypatch):

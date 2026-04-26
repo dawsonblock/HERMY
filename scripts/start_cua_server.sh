@@ -17,6 +17,15 @@ command -v cua-computer-server >/dev/null || {
   exit 1
 }
 
+CUA_HELP="$(cua-computer-server --help 2>&1 || true)"
+if [ -n "$CUA_HELP" ]; then
+  for flag in --host --port --width --height --mcp; do
+    if ! printf '%s\n' "$CUA_HELP" | grep -q -- "$flag"; then
+      echo "Warning: cua-computer-server help did not advertise $flag; validate this vendored CUA version before live use." >&2
+    fi
+  done
+fi
+
 echo "Starting CUA computer server on $CUA_HOST:$CUA_PORT (${CUA_WIDTH}x${CUA_HEIGHT})"
 echo "Expected CUA MCP URL: http://$CUA_HOST:$CUA_PORT/mcp"
 

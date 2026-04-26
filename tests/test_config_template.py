@@ -13,5 +13,12 @@ def test_config_template_declares_cua_http_and_cube_stdio():
 
     assert 'url: "http://127.0.0.1:8000/mcp"' in text
     assert 'command: "hermy-cube-mcp"' in text
-    assert 'backend: "none"' in text
+    assert "platform_toolsets:" in text
+    assert '"cua", "cube"' in text
+    assert "terminal:" not in text
+    assert '"terminal"' not in text
+    assert '"file"' not in text
+    assert '"code_execution"' not in text
     assert "HERMY_MAX_TIMEOUT_SECONDS" in text
+    assert "HERMY_MAX_CODE_BYTES" in text
+    assert "HERMY_REDACT_TOOL_OUTPUT" in text

@@ -73,6 +73,26 @@ def test_event_logger_redacts_nested_secret_payload(tmp_path, monkeypatch):
     assert payload["payload"]["nested"]["headers"][0]["authorization"] == "[REDACTED]"
 
 
+def test_event_logger_redacts_output_values_when_enabled(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("CUBE_EVENT_LOG", str(log_path))
+    monkeypatch.setenv("HERMY_REDACT_TOOL_OUTPUT", "1")
+
+    event_logger.log_event(
+        "cube_run_command",
+        payload={"stdout": "token=raw-token-value", "stderr": "Authorization: Bearer rawbearertoken"},
+        error="password=raw-password-value",
+    )
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "raw-token-value" not in text
+    assert "rawbearertoken" not in text
+    assert "raw-password-value" not in text
+    payload = json.loads(text)
+    assert "token=[REDACTED]" in payload["payload"]["stdout"]
+    assert "password=[REDACTED]" in payload["error"]
+
+
 def test_event_logger_warns_when_write_fails(tmp_path, monkeypatch):
     blocked_dir = tmp_path / "blocked"
     blocked_dir.write_text("not a directory", encoding="utf-8")

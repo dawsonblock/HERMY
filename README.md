@@ -69,10 +69,12 @@ HERMY does not provide:
 
 ## Install HERMY Integration Package
 
-Use Python 3.11 or newer.
+Use Python 3.11 or newer for the HERMY package. Use Python 3.12 for an
+integrated HERMY + Hermes + CUA runtime because the vendored CUA workspace
+requires Python `>=3.12,<3.14`.
 
 ```bash
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[test]"
 ```
@@ -145,7 +147,8 @@ After installing dependencies and exporting Cube variables:
 python scripts/hermy_doctor.py
 ```
 
-To include TCP reachability checks for CUA and Cube:
+To include live reachability and MCP tool discovery checks without mutating a
+Cube sandbox:
 
 ```bash
 python scripts/hermy_doctor.py --live \
@@ -153,8 +156,16 @@ python scripts/hermy_doctor.py --live \
   --cube-url "$E2B_API_URL"
 ```
 
-The live checks only verify basic TCP reachability. They do not create a Cube
-sandbox or prove that CUA tools execute correctly.
+To run the opt-in live Cube smoke test:
+
+```bash
+python scripts/hermy_doctor.py --live-smoke
+```
+
+`--live-smoke` creates a Cube sandbox, writes and reads
+`/workspace/hermy_probe.txt`, runs a shell probe, runs a Python probe, verifies
+that `/etc/passwd` writes are rejected by HERMY policy, and destroys the
+sandbox. It requires a real Cube/E2B-compatible deployment.
 
 ## Run Tests
 
@@ -170,6 +181,9 @@ server or a live Cube deployment.
 Use `config/hermes_config_template.yaml` as the starting point:
 
 ```yaml
+platform_toolsets:
+  cli: ["web", "browser", "vision", "image_gen", "skills", "todo", "memory", "session_search", "clarify", "cua", "cube"]
+
 mcp_servers:
   cua:
     url: "http://127.0.0.1:8000/mcp"
@@ -186,14 +200,16 @@ mcp_servers:
       E2B_API_KEY: "dummy"
       CUBE_TEMPLATE_ID: "<your-cube-template-id>"
       CUBE_WORKSPACE_DIR: "/workspace"
-
-terminal:
-  backend: "none"
+      HERMY_MAX_CODE_BYTES: "200000"
+      HERMY_REDACT_TOOL_OUTPUT: "0"
 ```
 
-The important rule is that Hermes local terminal execution stays disabled.
-Shell commands, Python code, and sandbox file operations should go through the
-HERMY Cube MCP bridge.
+The important rule is that Hermes host-side execution tools stay disabled.
+Use Hermes-supported `platform_toolsets.cli` configuration to exclude
+`terminal`, `file`, and `code_execution`. Do not rely on
+`terminal.backend: "none"` as a safety control; that backend is not known to be
+a supported Hermes backend in the vendored snapshot. Shell commands, Python
+code, and sandbox file operations should go through the HERMY Cube MCP bridge.
 
 ## Cube MCP Tools
 
@@ -228,7 +244,9 @@ Policy is intentionally conservative:
 
 - Workspace root defaults to `/workspace`.
 - Reads and writes must remain under the workspace root.
-- Command argv mode is preferred when callers can supply `list[str]`.
+- Command `list[str]` input is preferred because policy can validate explicit
+  arguments, but the current Cube client converts it to a quoted shell command
+  before calling E2B/Cube because no native argv backend has been confirmed.
 - Shell control operators are blocked in raw commands.
 - Shell control operators require explicit approved-shell mode.
 - Shell wrapper execution such as `bash -c ...` is blocked.
@@ -241,6 +259,10 @@ Policy is intentionally conservative:
 - Maximum timeout is 120 seconds.
 - Maximum file write size is 1,000,000 bytes.
 - Maximum returned text payload is 200,000 bytes.
+- Maximum Python source payload is 200,000 bytes.
+- Tool output redaction is disabled by default; set
+  `HERMY_REDACT_TOOL_OUTPUT=1` to redact token-like values in stdout, stderr,
+  file content, and tool errors before returning them.
 
 Override these with:
 
@@ -250,6 +272,8 @@ export HERMY_DEFAULT_TIMEOUT_SECONDS=60
 export HERMY_MAX_TIMEOUT_SECONDS=120
 export HERMY_MAX_FILE_WRITE_BYTES=1000000
 export HERMY_MAX_OUTPUT_BYTES=200000
+export HERMY_MAX_CODE_BYTES=200000
+export HERMY_REDACT_TOOL_OUTPUT=0
 export HERMY_ALLOW_INTERNET=0
 export CUBE_EVENT_LOG=cube_events.jsonl
 export CUBE_STRICT_AUDIT_LOGGING=0
@@ -268,7 +292,8 @@ A live environment is ready only after all of these are true:
 - Cube/E2B-compatible API endpoint is reachable.
 - `CUBE_TEMPLATE_ID` points to a valid template.
 - A Cube sandbox can be created outside Hermes with the E2B client.
-- Hermes is configured with `terminal.backend: "none"`.
+- Hermes `platform_toolsets.cli` excludes `terminal`, `file`, and
+  `code_execution`.
 - Hermes can list both CUA and Cube MCP tools.
 - Unknown Cube sandbox IDs are rejected before any backend call is made.
 - A Cube sandbox can write and read a file under `/workspace`.

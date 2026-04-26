@@ -37,6 +37,7 @@ _DEFAULT_TIMEOUT_SECONDS = 60
 _MAX_TIMEOUT_SECONDS = 120
 _MAX_FILE_WRITE_BYTES = 1_000_000
 _MAX_OUTPUT_BYTES = 200_000
+_MAX_CODE_BYTES = 200_000
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,10 @@ def max_file_write_bytes() -> int:
 
 def max_output_bytes() -> int:
     return _positive_int_from_env("HERMY_MAX_OUTPUT_BYTES", _MAX_OUTPUT_BYTES)
+
+
+def max_code_bytes() -> int:
+    return _positive_int_from_env("HERMY_MAX_CODE_BYTES", _MAX_CODE_BYTES)
 
 
 def _truthy_env(name: str) -> bool:
@@ -157,11 +162,13 @@ def _validate_argv_parts(parts: list[str], normalized: str) -> PolicyDecision:
 
 
 def validate_command(command: str | list[str], approved: bool = False) -> PolicyDecision:
-    """Validate a command in argv or shell-string form.
+    """Validate a command in argv-list or shell-string form.
 
-    ``list[str]`` is treated as argv mode and avoids shell parsing. ``str`` is
-    treated as shell mode. Shell control operators require explicit approval,
-    and destructive commands remain blocked even when approved.
+    ``list[str]`` is preferred because policy validation can inspect explicit
+    arguments. The Cube client may still convert it to a quoted shell command
+    when the backend lacks a native argv API. ``str`` is treated as shell mode.
+    Shell control operators require explicit approval, and destructive commands
+    remain blocked even when approved.
     """
     if isinstance(command, list):
         if not command:
@@ -233,6 +240,15 @@ def validate_file_content(content: str) -> PolicyDecision:
     return PolicyDecision(True, normalized_value=size)
 
 
+def validate_python_code(code: str) -> PolicyDecision:
+    """Validate Python source size before execution in Cube."""
+    size = len(code.encode("utf-8"))
+    maximum = max_code_bytes()
+    if size > maximum:
+        return PolicyDecision(False, f"python code exceeds maximum of {maximum} bytes", normalized_value=size)
+    return PolicyDecision(True, normalized_value=size)
+
+
 def truncate_output(text: str, max_bytes: int | None = None) -> tuple[str, bool]:
     """Trim large tool payloads and report whether truncation happened."""
     maximum = max_output_bytes() if max_bytes is None else max_bytes
@@ -266,6 +282,7 @@ __all__ = [
     "is_command_allowed",
     "is_read_allowed",
     "is_write_allowed",
+    "max_code_bytes",
     "max_file_write_bytes",
     "max_output_bytes",
     "max_timeout_seconds",
@@ -275,6 +292,7 @@ __all__ = [
     "validate_allow_internet",
     "validate_command",
     "validate_file_content",
+    "validate_python_code",
     "validate_read_path",
     "validate_timeout",
     "validate_workspace_path",

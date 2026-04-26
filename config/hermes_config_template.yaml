@@ -27,10 +27,12 @@ mcp_servers:
       HERMY_MAX_TIMEOUT_SECONDS: "120"
       HERMY_MAX_FILE_WRITE_BYTES: "1000000"
       HERMY_MAX_OUTPUT_BYTES: "200000"
+      HERMY_MAX_CODE_BYTES: "200000"
+      HERMY_REDACT_TOOL_OUTPUT: "0"
       HERMY_ALLOW_INTERNET: "0"
 
-terminal:
-  backend: "none"
+platform_toolsets:
+  cli: ["web", "browser", "vision", "image_gen", "skills", "todo", "memory", "session_search", "clarify", "cua", "cube"]
 
 memory:
   provider: "local"

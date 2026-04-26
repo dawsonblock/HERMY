@@ -22,7 +22,9 @@ backends instead of using a local terminal.
    - `cube_destroy`
    - `cube_destroy_all`
 
-3. Do not run shell commands through Hermes' local terminal.
+3. Do not run shell commands through Hermes' local terminal. The HERMY config
+   should disable Hermes host-side `terminal`, `file`, and `code_execution`
+   toolsets and expose code/file work through Cube MCP instead.
 
 4. Do not use CUA as a shell or code execution backend unless the operator has
    explicitly isolated that CUA desktop and changed the policy for that purpose.

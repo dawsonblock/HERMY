@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from controller import policy
 from controller.runtime_controller import RuntimeController
 
 
 class FakeCuaClient:
     def screenshot(self) -> dict[str, str]:
         return {"image": "ok"}
+
+
+class FailingCuaClient:
+    def screenshot(self) -> dict[str, object]:
+        return {"ok": False, "error": "screenshot failed"}
 
 
 class FakeCubeClient:
@@ -48,6 +54,12 @@ class FakeCubeClient:
         return {"ok": True, "sandbox_id": kwargs["sandbox_id"], "error": None}
 
 
+class FailingDestroyCubeClient(FakeCubeClient):
+    def cube_destroy(self, **kwargs):
+        self.calls.append(("cube_destroy", kwargs))
+        raise RuntimeError("destroy exploded")
+
+
 def _controller(monkeypatch, cube=None):
     monkeypatch.setattr("controller.runtime_controller.event_logger.log_event", lambda *args, **kwargs: True)
     return RuntimeController(cua_client=FakeCuaClient(), cube_client=cube or FakeCubeClient())
@@ -61,6 +73,18 @@ def test_controller_routes_gui_request(monkeypatch):
     assert response["ok"] is True
     assert response["backend"] == "cua"
     assert response["result"] == {"image": "ok"}
+
+
+def test_controller_propagates_failed_cua_result(monkeypatch):
+    monkeypatch.setattr("controller.runtime_controller.event_logger.log_event", lambda *args, **kwargs: True)
+    controller = RuntimeController(cua_client=FailingCuaClient(), cube_client=FakeCubeClient())
+
+    response = controller.handle_gui_request({"op": "screenshot"})
+
+    assert response["ok"] is False
+    assert response["backend"] == "cua"
+    assert response["error"] == "screenshot failed"
+    assert response["result"] == {"ok": False, "error": "screenshot failed"}
 
 
 def test_unknown_sandbox_id_is_rejected_before_cube_client_call(monkeypatch):
@@ -156,6 +180,20 @@ def test_destroy_all_destroys_all_known_sessions(monkeypatch):
     assert ("cube_destroy", {"sandbox_id": "sbx-2"}) in cube.calls
 
 
+def test_cleanup_is_best_effort_when_destroy_raises(monkeypatch):
+    cube = FailingDestroyCubeClient()
+    controller = _controller(monkeypatch, cube)
+    controller.handle_code_request({"op": "create", "template_id": "tpl-1"})
+
+    results = controller.cleanup()
+
+    assert len(results) == 1
+    assert results[0]["ok"] is False
+    assert results[0]["sandbox_id"] == "sbx-1"
+    assert "destroy exploded" in results[0]["error"]
+    assert "sbx-1" in controller.sessions
+
+
 def test_run_command_updates_last_used_at(monkeypatch):
     values = iter(["2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z", "2026-01-01T00:00:02Z"])
     monkeypatch.setattr("controller.runtime_controller._utc_now", lambda: next(values))
@@ -181,6 +219,50 @@ def test_output_truncation_sets_flag(monkeypatch):
 
     assert response["truncated"] is True
     assert response["stdout"].startswith("abc")
+
+
+def test_output_redaction_removes_token_like_values(monkeypatch):
+    monkeypatch.setenv("HERMY_REDACT_TOOL_OUTPUT", "1")
+    cube = FakeCubeClient()
+    cube.command_stdout = "token=raw-secret-value"
+    controller = _controller(monkeypatch, cube)
+    controller.handle_code_request({"op": "create", "template_id": "tpl-1"})
+
+    response = controller.handle_code_request({"op": "run_command", "sandbox_id": "sbx-1", "command": "echo ok"})
+
+    assert "raw-secret-value" not in response["stdout"]
+    assert "token=[REDACTED]" in response["stdout"]
+
+
+def test_run_python_rejects_code_over_policy_limit(monkeypatch):
+    monkeypatch.setenv("HERMY_MAX_CODE_BYTES", "3")
+    cube = FakeCubeClient()
+    controller = _controller(monkeypatch, cube)
+    controller.handle_code_request({"op": "create", "template_id": "tpl-1"})
+
+    response = controller.handle_code_request({"op": "run_python", "sandbox_id": "sbx-1", "code": "print(1)"})
+
+    assert response["ok"] is False
+    assert "python code exceeds maximum" in response["error"]
+    assert not any(call[0] == "cube_run_python" for call in cube.calls)
+
+
+def test_run_python_audit_includes_code_hash_and_size(monkeypatch):
+    events = []
+
+    def capture_event(*args, **kwargs):
+        events.append(kwargs)
+        return True
+
+    monkeypatch.setattr("controller.runtime_controller.event_logger.log_event", capture_event)
+    controller = RuntimeController(cua_client=FakeCuaClient(), cube_client=FakeCubeClient())
+    controller.handle_code_request({"op": "create", "template_id": "tpl-1"})
+
+    controller.handle_code_request({"op": "run_python", "sandbox_id": "sbx-1", "code": "print(1)"})
+
+    python_event = next(event for event in events if event["payload"].get("code_sha256"))
+    assert python_event["payload"]["code_bytes"] == len("print(1)".encode("utf-8"))
+    assert len(python_event["payload"]["code_sha256"]) == 64
 
 
 def test_controller_routes_code_request(monkeypatch):
@@ -252,3 +334,9 @@ def test_controller_requires_sandbox_id(monkeypatch):
 
     assert response["ok"] is False
     assert response["error"] == "sandbox_id is required"
+
+
+def test_policy_max_code_bytes_reads_env(monkeypatch):
+    monkeypatch.setenv("HERMY_MAX_CODE_BYTES", "123")
+
+    assert policy.max_code_bytes() == 123

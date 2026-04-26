@@ -182,3 +182,30 @@ def test_python_fallback_writes_scratch_under_workspace(monkeypatch):
     assert response["ok"] is True
     assert sandbox.files.writes[0][0].startswith("/workspace/.hermy/tmp/")
     assert sandbox.commands.commands[0][0] == "mkdir -p /workspace/.hermy/tmp"
+
+
+def test_command_list_is_converted_to_quoted_shell_command(monkeypatch):
+    module = _bridge(monkeypatch)
+
+    class FakeCommands:
+        def __init__(self):
+            self.commands = []
+
+        def run(self, command, timeout=None):
+            self.commands.append((command, timeout))
+            return SimpleNamespace(stdout="ok", stderr="", exit_code=0)
+
+    class FakeSandbox:
+        sandbox_id = "sbx-1"
+
+        def __init__(self):
+            self.commands = FakeCommands()
+
+    client = module.CubeSandboxClient(template_id="tpl", sandbox_cls=SimpleNamespace(create=lambda **_: FakeSandbox()))
+    client.cube_create()
+
+    response = client.cube_run_command("sbx-1", ["echo", "ok && whoami"], timeout_seconds=10)
+
+    sandbox = client._sandboxes["sbx-1"]
+    assert response["ok"] is True
+    assert sandbox.commands.commands == [("echo 'ok && whoami'", 10)]

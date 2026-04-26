@@ -92,6 +92,12 @@ class CubeSandboxClient:
         command: str | list[str],
         timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
+        """Run a command through Cube.
+
+        List input is policy-validated as argv by RuntimeController, then
+        converted with shlex.join because the current E2B-compatible command
+        API accepts a shell command string rather than a native argv vector.
+        """
         sandbox = self._require_sandbox(sandbox_id)
         final_command = shlex.join(command) if isinstance(command, list) else command
         result = sandbox.commands.run(final_command, timeout=timeout_seconds)
@@ -330,7 +336,9 @@ def create_mcp_server(controller: RuntimeController | None = None) -> FastMCP:
         "cube",
         instructions=(
             "Use these tools to inspect HERMY bridge health, create Cube sandboxes, "
-            "execute commands or Python, and read or write sandbox files under /workspace."
+            "execute commands or Python, and read or write sandbox files under /workspace. "
+            "Command list input is validated as argv but converted to a quoted shell command "
+            "unless the backend adds native argv support."
         ),
     )
 
