@@ -13,7 +13,7 @@ and `tests/`.
 
 ## What Is Vendored
 
-The archive includes upstream source trees:
+This repo currently includes these upstream source trees:
 
 - `hermes-agent-2026.4.23/`
 - `cua-main/`
@@ -28,7 +28,8 @@ the local integration packages:
 Hermes can be run from the vendored source tree or installed separately. CUA
 source is vendored, but the CUA MCP server must run as its own process.
 CubeSandbox source is vendored, but live Cube execution requires a real
-Linux/KVM Cube deployment or another E2B-compatible Cube API endpoint.
+Linux/KVM Cube deployment or another E2B-compatible Cube API endpoint plus a
+valid `CUBE_TEMPLATE_ID`.
 
 ## Architecture
 
@@ -110,12 +111,15 @@ CUA_HEIGHT=720
 ```
 
 CUA should control a disposable or isolated desktop session when safety
-matters. HERMY does not make your host desktop safe.
+matters. HERMY does not make your host desktop safe. Keep CUA GUI-only unless
+you have deliberately isolated the desktop and changed the policy for that
+purpose.
 
 ## Start Or Point To Cube
 
-Cube live execution requires a running CubeSandbox deployment with KVM support,
-or another E2B-compatible Cube API.
+Cube live execution requires a running CubeSandbox deployment with Linux/KVM
+support, or another E2B-compatible Cube API, plus a valid template ID. Cube is
+the only intended HERMY code and shell execution backend.
 
 Set the required environment variables:
 
@@ -147,8 +151,27 @@ After installing dependencies and exporting Cube variables:
 python scripts/hermy_doctor.py
 ```
 
-To include live reachability and MCP tool discovery checks without mutating a
-Cube sandbox:
+To verify the config text and vendored Hermes' resolved CLI tool registry
+without live CUA or Cube:
+
+```bash
+python scripts/hermy_doctor.py --skip-env --hermes-tool-registry
+```
+
+To test CUA only:
+
+```bash
+python scripts/hermy_doctor.py --skip-env --live-cua \
+  --cua-url http://127.0.0.1:8000/mcp
+```
+
+To test Cube API reachability only:
+
+```bash
+python scripts/hermy_doctor.py --live-cube --cube-url "$E2B_API_URL"
+```
+
+To test both live backends without mutating a Cube sandbox:
 
 ```bash
 python scripts/hermy_doctor.py --live \
@@ -159,13 +182,39 @@ python scripts/hermy_doctor.py --live \
 To run the opt-in live Cube smoke test:
 
 ```bash
-python scripts/hermy_doctor.py --live-smoke
+python scripts/hermy_doctor.py --live-cube-smoke
 ```
 
-`--live-smoke` creates a Cube sandbox, writes and reads
+`--live-cube-smoke` creates a Cube sandbox, writes and reads
 `/workspace/hermy_probe.txt`, runs a shell probe, runs a Python probe, verifies
 that `/etc/passwd` writes are rejected by HERMY policy, and destroys the
-sandbox. It requires a real Cube/E2B-compatible deployment.
+sandbox. It requires a real Cube/E2B-compatible deployment. The older
+`--live-smoke` flag remains as an alias for CUA live checks, Cube API
+reachability, and Cube smoke checks.
+
+## Manual Startup Order
+
+HERMY does not provide a supervisor yet. Start the pieces in this order:
+
+```bash
+# 1. Start an isolated CUA desktop/MCP server.
+scripts/start_cua_server.sh
+
+# 2. Start or point to a real Cube/E2B-compatible deployment.
+export E2B_API_URL=http://<cube-api-host>:3000
+export E2B_API_KEY=dummy
+export CUBE_TEMPLATE_ID=<template-id>
+
+# 3. Verify local config and Hermes tool resolution.
+python scripts/hermy_doctor.py --skip-env --hermes-tool-registry
+
+# 4. Verify live backends as needed.
+python scripts/hermy_doctor.py --live-cua --live-cube
+
+# 5. Run Hermes with config/hermes_config_template.yaml adapted to your environment.
+```
+
+CUA isolation and Cube deployment remain operator responsibilities.
 
 ## Run Tests
 
@@ -173,8 +222,20 @@ sandbox. It requires a real Cube/E2B-compatible deployment.
 pytest
 ```
 
-These tests are local integration-layer tests. They do not require a live CUA
-server or a live Cube deployment.
+Recommended clean-environment command:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q
+```
+
+The same fallback is available as:
+
+```bash
+PYTHON=python3.12 scripts/run_local_tests.sh
+```
+
+These tests are local integration-layer tests. Default tests do not require live CUA, live Cube, KVM, Docker, API keys, or network.
+Use live doctor modes only when you deliberately want to test running infrastructure.
 
 ## Configure Hermes
 

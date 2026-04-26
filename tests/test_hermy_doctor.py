@@ -34,6 +34,17 @@ def test_doctor_can_skip_env_for_source_checks(monkeypatch, capsys):
     assert "live:cua_mcp" not in captured.out
 
 
+def test_doctor_reports_vendored_archive_trees_present():
+    doctor = _load_doctor()
+
+    checks = doctor._check_archive_structure()
+
+    statuses = {check.name: check.status for check in checks}
+    assert statuses["archive:hermes-agent-2026.4.23"] == "PASS"
+    assert statuses["archive:cua-main"] == "PASS"
+    assert statuses["archive:CubeSandbox-master"] == "PASS"
+
+
 def test_doctor_fails_when_required_env_is_missing(monkeypatch):
     doctor = _load_doctor()
     monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
@@ -156,6 +167,108 @@ def test_doctor_default_mode_does_not_check_live_services(monkeypatch):
     checks = doctor.collect_checks(args)
 
     assert not any(check.name.startswith("live:") for check in checks)
+
+
+def test_doctor_hermes_registry_passes_safe_resolution(monkeypatch, tmp_path):
+    doctor = _load_doctor()
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+mcp_servers:
+  cua:
+    url: http://127.0.0.1:8000/mcp
+  cube:
+    command: hermy-cube-mcp
+platform_toolsets:
+  cli: ["web", "browser", "cua", "cube"]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(doctor, "_resolve_hermes_registry", lambda _: ({"web", "browser", "cua", "cube"}, {"web_search"}))
+
+    checks = doctor._check_hermes_tool_registry(config)
+
+    assert any(check.name == "hermes:registry_toolsets" and check.status == "PASS" for check in checks)
+    assert any(check.name == "hermes:registry_tools" and check.status == "PASS" for check in checks)
+
+
+def test_doctor_hermes_registry_fails_resolved_host_toolset(monkeypatch, tmp_path):
+    doctor = _load_doctor()
+    config = tmp_path / "config.yaml"
+    config.write_text("platform_toolsets:\n  cli: [web]\n", encoding="utf-8")
+    monkeypatch.setattr(doctor, "_resolve_hermes_registry", lambda _: ({"web", "terminal"}, {"web_search"}))
+
+    checks = doctor._check_hermes_tool_registry(config)
+
+    failure = next(check for check in checks if check.name == "hermes:registry_toolsets")
+    assert failure.status == "FAIL"
+    assert "terminal" in failure.detail
+
+
+def test_doctor_hermes_registry_fails_resolved_host_tools(monkeypatch, tmp_path):
+    doctor = _load_doctor()
+    config = tmp_path / "config.yaml"
+    config.write_text("platform_toolsets:\n  cli: [web]\n", encoding="utf-8")
+    monkeypatch.setattr(doctor, "_resolve_hermes_registry", lambda _: ({"web"}, {"web_search", "terminal", "read_file"}))
+
+    checks = doctor._check_hermes_tool_registry(config)
+
+    failure = next(check for check in checks if check.name == "hermes:registry_tools")
+    assert failure.status == "FAIL"
+    assert "terminal" in failure.detail
+    assert "read_file" in failure.detail
+
+
+def test_doctor_live_cua_does_not_require_cube_env_or_checks(monkeypatch):
+    doctor = _load_doctor()
+    monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
+    monkeypatch.setattr(doctor, "REQUIRED_IMPORTS", ())
+    monkeypatch.setattr(doctor, "_check_bridge_tools", lambda: doctor._result("PASS", "bridge:tools", "ok"))
+    monkeypatch.setattr(doctor, "_check_tcp_url", lambda name, url, timeout: doctor._result("PASS", name, "ok"))
+    monkeypatch.setattr(doctor, "_check_mcp_http_tools", lambda name, url, timeout: doctor._result("PASS", name, "ok"))
+    for name in doctor.REQUIRED_ENV:
+        monkeypatch.delenv(name, raising=False)
+    args = doctor.build_parser().parse_args(["--live-cua"])
+
+    checks = doctor.collect_checks(args)
+
+    assert not any(check.name.startswith("env:") for check in checks)
+    assert any(check.name == "live:cua_mcp" for check in checks)
+    assert any(check.name == "live:cua_tools" for check in checks)
+    assert not any(check.name == "live:cube_api" for check in checks)
+
+
+def test_doctor_live_cube_smoke_does_not_require_cua(monkeypatch):
+    doctor = _load_doctor()
+    monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
+    monkeypatch.setattr(doctor, "REQUIRED_IMPORTS", ())
+    monkeypatch.setattr(doctor, "_check_bridge_tools", lambda: doctor._result("PASS", "bridge:tools", "ok"))
+    monkeypatch.setattr(doctor, "_check_tcp_url", lambda name, url, timeout: doctor._result("PASS", name, "ok"))
+    monkeypatch.setattr(doctor, "_check_mcp_http_tools", lambda name, url, timeout: doctor._result("FAIL", name, "should not run"))
+    monkeypatch.setattr(doctor, "_run_cube_live_smoke", lambda timeout: [doctor._result("PASS", "smoke:cube_create", "ok")])
+    for name in doctor.REQUIRED_ENV:
+        monkeypatch.setenv(name, "set")
+    args = doctor.build_parser().parse_args(["--live-cube-smoke"])
+
+    checks = doctor.collect_checks(args)
+
+    assert any(check.name == "smoke:cube_create" and check.status == "PASS" for check in checks)
+    assert not any(check.name.startswith("live:cua") for check in checks)
+    assert not any(check.detail == "should not run" for check in checks)
+
+
+def test_doctor_legacy_live_alias_maps_to_cua_and_cube(monkeypatch):
+    doctor = _load_doctor()
+    args = doctor.build_parser().parse_args(["--live"])
+
+    assert doctor._live_modes(args) == (True, True, False)
+
+
+def test_doctor_legacy_live_smoke_alias_maps_to_all_live_modes(monkeypatch):
+    doctor = _load_doctor()
+    args = doctor.build_parser().parse_args(["--live-smoke"])
+
+    assert doctor._live_modes(args) == (True, True, True)
 
 
 def test_doctor_live_smoke_invokes_cube_smoke(monkeypatch):

@@ -31,6 +31,8 @@ mcp_servers:
       HERMY_REDACT_TOOL_OUTPUT: "0"
       HERMY_ALLOW_INTERNET: "0"
 
+# Keep host-side Hermes execution disabled. HERMY doctor can verify both this
+# text config and vendored Hermes' resolved CLI tool registry.
 platform_toolsets:
   cli: ["web", "browser", "vision", "image_gen", "skills", "todo", "memory", "session_search", "clarify", "cua", "cube"]
 

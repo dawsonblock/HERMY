@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib
 import importlib.util
 import json
@@ -11,7 +12,9 @@ import os
 from pathlib import Path
 import re
 import socket
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -23,6 +26,12 @@ if str(REPO_ROOT) not in sys.path:
 REQUIRED_PYTHON = (3, 11)
 CUA_RECOMMENDED_PYTHON = (3, 12)
 DEFAULT_HERMES_CONFIG = REPO_ROOT / "config" / "hermes_config_template.yaml"
+HERMES_SOURCE_DIR = REPO_ROOT / "hermes-agent-2026.4.23"
+VENDORED_TREES = (
+    "hermes-agent-2026.4.23",
+    "cua-main",
+    "CubeSandbox-master",
+)
 REQUIRED_IMPORTS = (
     ("controller", "local controller package"),
     ("cube_bridge", "local Cube MCP bridge package"),
@@ -45,6 +54,16 @@ SAFE_CLI_TOOLSETS = (
     "cube",
 )
 HOST_EXECUTION_TOOLSETS = ("terminal", "file", "code_execution")
+HOST_EXECUTION_TOOL_NAMES = (
+    "terminal",
+    "process",
+    "read_file",
+    "write_file",
+    "patch",
+    "search_files",
+    "execute_code",
+)
+HERMES_REGISTRY_TIMEOUT_SECONDS = 30
 BRIDGE_TOOLS = (
     "cube_health",
     "cube_create",
@@ -117,6 +136,27 @@ def _check_bridge_tools() -> CheckResult:
     if missing:
         return _result("FAIL", "bridge:tools", "missing tools: " + ", ".join(missing))
     return _result("PASS", "bridge:tools", "Cube MCP tool surface is present")
+
+
+def _check_archive_structure() -> list[CheckResult]:
+    checks: list[CheckResult] = []
+    readme_text = ""
+    readme_path = REPO_ROOT / "README.md"
+    if readme_path.exists():
+        try:
+            readme_text = readme_path.read_text(encoding="utf-8")
+        except OSError:
+            readme_text = ""
+
+    for dirname in VENDORED_TREES:
+        path = REPO_ROOT / dirname
+        if path.is_dir():
+            checks.append(_result("PASS", f"archive:{dirname}", "vendored tree is present"))
+        elif dirname in readme_text:
+            checks.append(_result("FAIL", f"archive:{dirname}", "README claims this vendored tree exists, but it is absent"))
+        else:
+            checks.append(_result("WARN", f"archive:{dirname}", "vendored tree is absent and README does not claim it"))
+    return checks
 
 
 def _strip_comment(line: str) -> str:
@@ -240,6 +280,114 @@ def _check_hermes_config(path: Path) -> list[CheckResult]:
     return checks
 
 
+def _load_yaml_config(path: Path) -> dict:
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover - depends on environment
+        raise RuntimeError("PyYAML is required for Hermes registry verification") from exc
+
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError as exc:
+        raise RuntimeError(f"could not read {path}: {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"could not parse {path}: {exc}") from exc
+
+    if not isinstance(loaded, dict):
+        raise RuntimeError("Hermes config must parse as a mapping")
+    return loaded
+
+
+def _disable_mcp_for_schema_resolution(config: dict) -> dict:
+    safe_config = copy.deepcopy(config)
+    servers = safe_config.get("mcp_servers")
+    if isinstance(servers, dict):
+        for server_cfg in servers.values():
+            if isinstance(server_cfg, dict):
+                server_cfg["enabled"] = False
+    return safe_config
+
+
+def _resolve_hermes_registry(config: dict) -> tuple[set[str], set[str]]:
+    """Resolve Hermes CLI toolsets and schemas without connecting live MCP."""
+    if not HERMES_SOURCE_DIR.exists():
+        raise RuntimeError(f"vendored Hermes source not found: {HERMES_SOURCE_DIR}")
+
+    safe_config = _disable_mcp_for_schema_resolution(config)
+    with tempfile.TemporaryDirectory(prefix="hermy-hermes-home-") as temp_dir:
+        temp_home = Path(temp_dir)
+        (temp_home / "config.yaml").write_text(json.dumps(safe_config), encoding="utf-8")
+        code = f"""
+import json
+import os
+import sys
+
+sys.path.insert(0, {str(HERMES_SOURCE_DIR)!r})
+
+from hermes_cli.config import load_config
+from hermes_cli.tools_config import _get_platform_tools
+
+config = load_config()
+enabled = sorted(_get_platform_tools(config, "cli"))
+
+from model_tools import get_tool_definitions
+
+schemas = get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)
+tool_names = sorted(
+    schema.get("function", {{}}).get("name", "")
+    for schema in schemas
+    if schema.get("function", {{}}).get("name")
+)
+print("HERMY_REGISTRY_JSON=" + json.dumps({{"toolsets": enabled, "tool_names": tool_names}}))
+"""
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(temp_home)
+        env["HERMES_IGNORE_USER_CONFIG"] = "0"
+        env["PYTHONPATH"] = str(HERMES_SOURCE_DIR) + os.pathsep + env.get("PYTHONPATH", "")
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=HERMES_REGISTRY_TIMEOUT_SECONDS,
+            check=False,
+        )
+
+    marker = "HERMY_REGISTRY_JSON="
+    payload_line = next((line for line in reversed(proc.stdout.splitlines()) if line.startswith(marker)), "")
+    if proc.returncode != 0 or not payload_line:
+        detail = (proc.stderr or proc.stdout or "Hermes registry subprocess produced no output").strip()
+        raise RuntimeError(detail)
+
+    payload = json.loads(payload_line[len(marker):])
+    return set(payload.get("toolsets", [])), set(payload.get("tool_names", []))
+
+
+def _check_hermes_tool_registry(path: Path) -> list[CheckResult]:
+    try:
+        config = _load_yaml_config(path)
+        resolved_toolsets, tool_names = _resolve_hermes_registry(config)
+    except subprocess.TimeoutExpired:
+        return [_result("FAIL", "hermes:registry", "Hermes registry verification timed out")]
+    except Exception as exc:
+        return [_result("FAIL", "hermes:registry", str(exc))]
+
+    checks: list[CheckResult] = []
+    blocked_toolsets = sorted(resolved_toolsets & set(HOST_EXECUTION_TOOLSETS))
+    if blocked_toolsets:
+        checks.append(_result("FAIL", "hermes:registry_toolsets", "resolved host execution toolsets: " + ", ".join(blocked_toolsets)))
+    else:
+        checks.append(_result("PASS", "hermes:registry_toolsets", "resolved CLI toolsets exclude host execution"))
+
+    blocked_tools = sorted(tool_names & set(HOST_EXECUTION_TOOL_NAMES))
+    if blocked_tools:
+        checks.append(_result("FAIL", "hermes:registry_tools", "resolved host execution tools: " + ", ".join(blocked_tools)))
+    else:
+        checks.append(_result("PASS", "hermes:registry_tools", "resolved tool schemas exclude host execution"))
+
+    return checks
+
+
 def _check_tcp_url(name: str, url: str, timeout: float) -> CheckResult:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -329,28 +477,40 @@ def _run_cube_live_smoke(timeout: float) -> list[CheckResult]:
     return checks
 
 
+def _live_modes(args: argparse.Namespace) -> tuple[bool, bool, bool]:
+    live_cua = bool(args.live_cua or args.live or args.live_smoke)
+    live_cube = bool(args.live_cube or args.live or args.live_smoke)
+    live_cube_smoke = bool(args.live_cube_smoke or args.live_smoke)
+    return live_cua, live_cube, live_cube_smoke
+
+
 def collect_checks(args: argparse.Namespace) -> list[CheckResult]:
+    live_cua, live_cube, live_cube_smoke = _live_modes(args)
     checks = [_check_python()]
+    checks.extend(_check_archive_structure())
     checks.extend(_check_import(module_name, label) for module_name, label in REQUIRED_IMPORTS)
     checks.append(_check_bridge_tools())
     checks.extend(_check_hermes_config(Path(args.hermes_config)))
+    if args.hermes_tool_registry:
+        checks.extend(_check_hermes_tool_registry(Path(args.hermes_config)))
 
-    if not args.skip_env:
+    only_live_cua = live_cua and not live_cube and not live_cube_smoke
+    if not args.skip_env and not only_live_cua:
         checks.extend(_check_env(name) for name in REQUIRED_ENV)
 
     cua_url = args.cua_url or os.environ.get("CUA_MCP_URL", "http://127.0.0.1:8000/mcp")
     cube_url = args.cube_url or os.environ.get("E2B_API_URL", "")
 
-    if args.live or args.live_smoke:
+    if live_cua:
         checks.append(_check_tcp_url("live:cua_mcp", cua_url, args.timeout))
         checks.append(_check_mcp_http_tools("live:cua_tools", cua_url, args.timeout))
-        checks.append(_check_bridge_tools())
+    if live_cube:
         if cube_url:
             checks.append(_check_tcp_url("live:cube_api", cube_url, args.timeout))
         else:
             checks.append(_result("FAIL", "live:cube_api", "E2B_API_URL is not set"))
 
-    if args.live_smoke:
+    if live_cube_smoke:
         checks.extend(_run_cube_live_smoke(args.timeout))
 
     return checks
@@ -364,12 +524,16 @@ def _print_checks(checks: list[CheckResult]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Check HERMY integration prerequisites.")
-    parser.add_argument("--live", action="store_true", help="check live CUA/Cube reachability and MCP discovery without mutation")
-    parser.add_argument("--live-smoke", action="store_true", help="run opt-in live Cube create/run/read/write/destroy smoke tests")
+    parser.add_argument("--live", action="store_true", help="alias for --live-cua --live-cube")
+    parser.add_argument("--live-smoke", action="store_true", help="alias for --live-cua --live-cube --live-cube-smoke")
+    parser.add_argument("--live-cua", action="store_true", help="check CUA TCP reachability and HTTP MCP tools/list")
+    parser.add_argument("--live-cube", action="store_true", help="check Cube/E2B API TCP reachability without sandbox mutation")
+    parser.add_argument("--live-cube-smoke", action="store_true", help="run opt-in live Cube create/run/read/write/destroy smoke tests")
     parser.add_argument("--skip-env", action="store_true", help="skip required Cube environment variable checks")
-    parser.add_argument("--cua-url", help="CUA MCP URL to check when --live or --live-smoke is used")
-    parser.add_argument("--cube-url", help="Cube/E2B-compatible API URL to check when --live or --live-smoke is used")
+    parser.add_argument("--cua-url", help="CUA MCP URL to check when CUA live checks are used")
+    parser.add_argument("--cube-url", help="Cube/E2B-compatible API URL to check when Cube live checks are used")
     parser.add_argument("--hermes-config", default=str(DEFAULT_HERMES_CONFIG), help="Hermes config file to validate")
+    parser.add_argument("--hermes-tool-registry", action="store_true", help="verify vendored Hermes resolves no host execution tools")
     parser.add_argument("--timeout", type=float, default=3.0, help="connection and smoke-test timeout in seconds")
     return parser
 
