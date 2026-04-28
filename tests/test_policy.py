@@ -171,3 +171,51 @@ def test_truncate_text_uses_byte_limit(monkeypatch):
 
     assert policy.truncate_text("abcdef").startswith("abcd")
     assert "HERMY output truncated" in policy.truncate_text("abcdef")
+
+
+# ---------------------------------------------------------------------------
+# Symlink / path confinement limitation tests
+# ---------------------------------------------------------------------------
+
+def test_traversal_path_blocked():
+    """A path using ../ components that escape the workspace is denied."""
+    os.environ["CUBE_WORKSPACE_DIR"] = "/workspace"
+    assert not policy.validate_workspace_path("/workspace/../etc/passwd").allowed
+    assert not policy.validate_workspace_path("/workspace/subdir/../../etc").allowed
+
+
+def test_deep_traversal_to_etc_passwd_blocked():
+    """Classic /etc/passwd escape via traversal is blocked."""
+    os.environ["CUBE_WORKSPACE_DIR"] = "/workspace"
+    assert not policy.is_write_allowed("/workspace/../../etc/passwd")
+    assert not policy.is_read_allowed("/workspace/../../etc/passwd")
+
+
+def test_symlink_path_passes_string_check():
+    """A path like /workspace/link passes string validation.
+
+    HERMY cannot detect that 'link' is a symlink pointing outside /workspace
+    inside the sandbox filesystem. This test documents the known limitation:
+    string-level path validation is not a complete confinement boundary.
+    The Cube/E2B backend must enforce workspace confinement independently.
+    """
+    os.environ["CUBE_WORKSPACE_DIR"] = "/workspace"
+    decision = policy.validate_workspace_path("/workspace/link")
+    assert decision.allowed, (
+        "String /workspace/link passes HERMY validation — "
+        "sandbox-internal symlink resolution is the backend's responsibility."
+    )
+
+
+def test_symlink_path_with_subpath_passes_string_check():
+    """Path /workspace/link/file passes HERMY string validation.
+
+    Documents the same limitation as test_symlink_path_passes_string_check.
+    If 'link' inside the sandbox points to /etc, this path resolves to
+    /etc/file — which HERMY cannot detect from the path string alone.
+    """
+    os.environ["CUBE_WORKSPACE_DIR"] = "/workspace"
+    decision = policy.validate_workspace_path("/workspace/link/file.txt")
+    assert decision.allowed, (
+        "HERMY cannot verify sandbox-internal symlinks — backend must enforce confinement."
+    )

@@ -5,9 +5,8 @@ These tests mock the upstream CUA interface so no live CUA server is required.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
-
-import pytest
 
 from cua_bridge.cua_mcp_proxy import (
     ALLOWED_CUA_TOOLS,
@@ -101,53 +100,50 @@ def test_filter_blocks_unknown_tools(monkeypatch):
 # CuaMcpProxy.call_tool gate tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_call_tool_blocks_forbidden_without_upstream_call():
+def test_call_tool_blocks_forbidden_without_upstream_call():
     proxy = CuaMcpProxy.__new__(CuaMcpProxy)
     proxy.upstream_url = "http://fake"
     proxy._client = None
 
-    result = await proxy.call_tool("computer_run_command", {"cmd": "ls"})
+    result = asyncio.run(proxy.call_tool("computer_run_command", {"cmd": "ls"}))
 
     assert result.get("isError") is True
-    assert "blocked" in result["content"][0]["text"].lower() or "policy" in result["content"][0]["text"].lower()
+    text = result["content"][0]["text"].lower()
+    assert "blocked" in text or "policy" in text
 
 
-@pytest.mark.asyncio
-async def test_call_tool_blocks_questionable_when_flag_not_set(monkeypatch):
+def test_call_tool_blocks_questionable_when_flag_not_set(monkeypatch):
     monkeypatch.delenv("HERMY_ALLOW_CUA_CLIPBOARD", raising=False)
 
     proxy = CuaMcpProxy.__new__(CuaMcpProxy)
     proxy.upstream_url = "http://fake"
     proxy._client = None
 
-    result = await proxy.call_tool("computer_clipboard_get", {})
+    result = asyncio.run(proxy.call_tool("computer_clipboard_get", {}))
 
     assert result.get("isError") is True
     text = result["content"][0]["text"]
     assert "disabled" in text.lower() or "HERMY_ALLOW_CUA" in text
 
 
-@pytest.mark.asyncio
-async def test_call_tool_passes_allowed_tool_to_upstream(monkeypatch):
+def test_call_tool_passes_allowed_tool_to_upstream(monkeypatch):
     monkeypatch.setattr(
         "cua_bridge.cua_mcp_proxy.CuaMcpProxy._call_upstream",
         AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "screenshot_data"}]}}),
     )
 
     proxy = CuaMcpProxy("http://fake")
-    result = await proxy.call_tool("computer_screenshot", {})
+    result = asyncio.run(proxy.call_tool("computer_screenshot", {}))
 
     assert result == {"content": [{"type": "text", "text": "screenshot_data"}]}
 
 
-@pytest.mark.asyncio
-async def test_call_tool_blocks_unknown_tool():
+def test_call_tool_blocks_unknown_tool():
     proxy = CuaMcpProxy.__new__(CuaMcpProxy)
     proxy.upstream_url = "http://fake"
     proxy._client = None
 
-    result = await proxy.call_tool("computer_unknown_future_tool", {})
+    result = asyncio.run(proxy.call_tool("computer_unknown_future_tool", {}))
 
     assert result.get("isError") is True
 

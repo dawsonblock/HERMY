@@ -66,6 +66,15 @@ except ImportError:  # pragma: no cover
 
 LOGGER = logging.getLogger(__name__)
 
+# Schema injection note: FastMCP does not currently support dynamic inputSchema
+# injection for registered tools. Argument schemas are therefore **kwargs for
+# all proxy tools. At proxy startup, HERMY attempts to fetch the upstream
+# tools/list and copies each tool's description text into the proxy tool's
+# docstring. This gives Hermes a human-readable description of accepted
+# arguments, but strict JSON Schema validation against the upstream schema is
+# not enforced. A compatibility test in tests/test_cua_schema_injection.py
+# verifies that Hermes can still call proxy tools without schema matching.
+
 # Safe GUI tools that are allowed through the proxy
 ALLOWED_CUA_TOOLS: frozenset[str] = frozenset([
     # Screen and mouse
@@ -287,12 +296,94 @@ class CuaMcpProxy:
 
 
 def create_proxy_mcp_server(upstream_url: str | None = None) -> FastMCP:
-    """Create the HERMY CUA MCP proxy server.
+    """Create the HERMY CUA MCP proxy server (sync wrapper).
 
-    This server exposes only safe GUI tools from upstream CUA.
-    Shell and file operations are blocked.
+    Attempts to fetch upstream tool descriptions for schema injection via a
+    short-lived event loop. Falls back to generic **kwargs descriptions if
+    upstream is unreachable. Use create_proxy_mcp_server_async() directly in
+    async contexts to avoid nested event-loop issues.
+    """
+    try:
+        return asyncio.run(create_proxy_mcp_server_async(upstream_url))
+    except RuntimeError:
+        # Already inside a running event loop — fall back to no-schema version.
+        proxy = CuaMcpProxy(upstream_url)
+        mcp = FastMCP(
+            name="hermy-cua-proxy",
+            instructions="""HERMY CUA Proxy - Safe GUI Operations Only
+
+This MCP server provides filtered access to CUA (Computer Use Agent) tools.
+Only GUI operations like screenshots, clicks, typing, and window management
+are allowed. Shell commands and file operations are blocked.
+
+For shell/file operations, use the HERMY Cube MCP bridge instead.
+""",
+        )
+        for tool_name in sorted(ALLOWED_CUA_TOOLS):
+            _register_tool_proxy(mcp, proxy, tool_name)
+        for tool_name in sorted(_enabled_questionable_tools()):
+            _register_tool_proxy(mcp, proxy, tool_name, questionable=True)
+        mcp._hermy_proxy = proxy  # type: ignore[attr-defined]
+        return mcp
+
+
+def _register_tool_proxy(
+    mcp: FastMCP,
+    proxy: CuaMcpProxy,
+    name: str,
+    questionable: bool = False,
+    upstream_desc: str | None = None,
+) -> None:
+    """Register a tool proxy function."""
+
+    async def tool_proxy(**kwargs: Any) -> Any:
+        if questionable:
+            LOGGER.warning(f"Questionable tool called: {name}")
+        return await proxy.call_tool(name, kwargs)
+
+    tool_proxy.__name__ = name
+
+    safety_note = (
+        "[HERMY proxy — shell/file tools are blocked. "
+        "Use hermy-cube-mcp for code/file operations.]"
+    )
+    if upstream_desc:
+        tool_proxy.__doc__ = f"{safety_note}\n\nUpstream description: {upstream_desc}"
+    else:
+        tool_proxy.__doc__ = safety_note
+
+    mcp.tool()(tool_proxy)
+
+
+async def _fetch_upstream_schemas(proxy: CuaMcpProxy) -> dict[str, str]:
+    """Fetch tool descriptions from upstream CUA; return {name: description}.
+
+    Silently returns an empty dict if upstream is unreachable or returns an
+    unexpected payload — the proxy still functions without schema descriptions.
+    """
+    try:
+        tools = await proxy.list_upstream_tools()
+        return {
+            t["name"]: t.get("description", "")
+            for t in tools
+            if isinstance(t, dict) and t.get("name")
+        }
+    except Exception as exc:  # pragma: no cover - upstream may not be running
+        LOGGER.debug(f"Could not fetch upstream schemas (proxy will use generic descriptions): {exc}")
+        return {}
+
+
+async def create_proxy_mcp_server_async(
+    upstream_url: str | None = None,
+) -> FastMCP:
+    """Create the HERMY CUA MCP proxy server, injecting upstream descriptions.
+
+    This async variant fetches upstream tool schemas at startup and injects
+    each tool's description into the registered proxy function's docstring.
+    Falls back gracefully when upstream is unreachable.
     """
     proxy = CuaMcpProxy(upstream_url)
+    upstream_descriptions = await _fetch_upstream_schemas(proxy)
 
     mcp = FastMCP(
         name="hermy-cua-proxy",
@@ -306,35 +397,20 @@ For shell/file operations, use the HERMY Cube MCP bridge instead.
 """,
     )
 
-    # Register allowed tools dynamically
     for tool_name in sorted(ALLOWED_CUA_TOOLS):
-        _register_tool_proxy(mcp, proxy, tool_name)
+        _register_tool_proxy(
+            mcp, proxy, tool_name,
+            upstream_desc=upstream_descriptions.get(tool_name),
+        )
 
-    # Register only the questionable tools currently enabled by env flags
     for tool_name in sorted(_enabled_questionable_tools()):
-        _register_tool_proxy(mcp, proxy, tool_name, questionable=True)
+        _register_tool_proxy(
+            mcp, proxy, tool_name, questionable=True,
+            upstream_desc=upstream_descriptions.get(tool_name),
+        )
 
-    # Store proxy reference for cleanup
     mcp._hermy_proxy = proxy  # type: ignore[attr-defined]
-
     return mcp
-
-
-def _register_tool_proxy(
-    mcp: FastMCP, proxy: CuaMcpProxy, name: str, questionable: bool = False
-) -> None:
-    """Register a tool proxy function."""
-
-    async def tool_proxy(**kwargs: Any) -> Any:
-        if questionable:
-            LOGGER.warning(f"Questionable tool called: {name}")
-        return await proxy.call_tool(name, kwargs)
-
-    # Copy name for the tool
-    tool_proxy.__name__ = name
-
-    # Register with MCP
-    mcp.tool()(tool_proxy)
 
 
 async def run_proxy_server(

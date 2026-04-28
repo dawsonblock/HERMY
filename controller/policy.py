@@ -98,7 +98,16 @@ def validate_allow_internet(allow_internet: bool | None) -> PolicyDecision:
 
 
 def validate_workspace_path(path: str) -> PolicyDecision:
-    """Resolve ``path`` and ensure it stays inside the workspace root."""
+    """Resolve ``path`` and ensure it stays inside the workspace root.
+
+    Symlink limitation: this function resolves the path string on the host
+    side using Path.resolve(strict=False). It cannot detect symlinks that
+    exist *inside* the sandbox filesystem. For example, if a sandbox
+    contains /workspace/link -> /etc, the path string "/workspace/link/file"
+    passes this check even though the real target is outside /workspace.
+    The real confinement boundary must be enforced by the Cube/E2B backend.
+    Do not rely on HERMY path validation alone as a security boundary.
+    """
     if not path or not str(path).strip():
         return PolicyDecision(False, "path cannot be empty")
 
@@ -173,6 +182,10 @@ def validate_command(
     when the backend lacks a native argv API. ``str`` is treated as shell mode.
     Shell control operators require explicit approval with a valid approval_id,
     and destructive commands remain blocked even when approved.
+
+    Note: approval_id currently proves only that a non-empty string was
+    supplied. A durable ledger that binds an approval_id to a specific
+    user, action, and expiry is pending. See controller/approval_ledger.py.
     """
     if isinstance(command, list):
         if not command:

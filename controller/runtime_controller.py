@@ -6,11 +6,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import inspect
+import json
+import logging
+import os
+from pathlib import Path
 import time
 import uuid
 from typing import Any
 
 from . import event_logger, policy
+
+_LOG = logging.getLogger(__name__)
 
 
 _CUA_DENIED_OPERATION_TERMS = ("command", "shell", "python", "file", "exec", "terminal")
@@ -44,6 +50,19 @@ class CubeSession:
         }
 
 
+def _session_file_path() -> Path | None:
+    """Return the configured session persistence file path.
+
+    Reads HERMY_SESSION_FILE from the environment.
+    Set HERMY_SESSION_FILE=none to disable persistence entirely.
+    Defaults to hermy_sessions.json in the current working directory.
+    """
+    raw = os.environ.get("HERMY_SESSION_FILE", "hermy_sessions.json")
+    if raw.lower() == "none" or raw == "":
+        return None
+    return Path(raw)
+
+
 class RuntimeController:
     """Coordinate calls to CUA and Cube based on policy and request type."""
 
@@ -52,6 +71,7 @@ class RuntimeController:
         self.cube_client = cube_client
         self.sessions: dict[str, CubeSession] = {}
         self.started_at = _utc_now()
+        self._load_sessions()
 
     def handle_gui_request(self, request: dict[str, Any]) -> dict[str, Any]:
         request_id = request.get("request_id") or uuid.uuid4().hex
@@ -151,6 +171,59 @@ class RuntimeController:
         response.setdefault("warnings", [])
         return response
 
+    def _load_sessions(self) -> None:
+        """Load persisted sessions from disk on startup.
+
+        All recovered sessions are marked status='stale' because HERMY cannot
+        confirm without a live Cube API call that the sandbox still exists.
+        A WARNING is logged per session so operators know to validate them.
+        """
+        path = _session_file_path()
+        if path is None or not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                _LOG.warning("Session file %s has unexpected format; skipping recovery.", path)
+                return
+            for sandbox_id, raw in data.items():
+                if not isinstance(raw, dict):
+                    continue
+                session = CubeSession(
+                    sandbox_id=str(sandbox_id),
+                    template_id=raw.get("template_id"),
+                    created_at=raw.get("created_at", _utc_now()),
+                    last_used_at=raw.get("last_used_at", _utc_now()),
+                    allow_internet=bool(raw.get("allow_internet", False)),
+                    status="stale",
+                    metadata=raw.get("metadata") or {},
+                )
+                self.sessions[sandbox_id] = session
+                _LOG.warning(
+                    "Recovered stale session %s from %s — validate before use.",
+                    sandbox_id,
+                    path,
+                )
+        except Exception as exc:
+            _LOG.warning("Could not load session file %s: %s", path, exc)
+
+    def _persist_sessions(self) -> None:
+        """Atomically write current sessions to the persistence file.
+
+        Uses write-to-temp + os.replace for atomicity. Errors are logged but
+        never raised so a persistence failure never crashes the bridge.
+        """
+        path = _session_file_path()
+        if path is None:
+            return
+        try:
+            data = {sid: session.to_dict() for sid, session in self.sessions.items()}
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception as exc:
+            _LOG.warning("Could not persist sessions to %s: %s", path, exc)
+
     def cleanup(self) -> list[dict[str, Any]]:
         """Destroy all active Cube sandboxes and return the per-sandbox results."""
         request_id = uuid.uuid4().hex
@@ -225,6 +298,7 @@ class RuntimeController:
             status="active",
             metadata=metadata,
         )
+        self._persist_sessions()
         warnings = self._audit(
             event_type="cube_create",
             request_id=request_id,
@@ -396,6 +470,7 @@ class RuntimeController:
         duration_ms = self._duration_ms(started)
         if self._is_success_result(result):
             self.sessions.pop(session.sandbox_id, None)
+            self._persist_sessions()
         warnings = self._audit(
             event_type="cube_destroy",
             request_id=request_id,

@@ -1,5 +1,11 @@
 # HERMY
 
+> **Build status:** Build 14 is a **local integration scaffold**. It is not
+> production-ready. Live operation requires a separately running CUA MCP
+> server and a real Linux/KVM CubeSandbox or E2B-compatible deployment.
+> iPhone and mobile devices can only be client UIs — they cannot run the
+> server components.
+
 HERMY is an integration scaffold for running Hermes with two separate
 execution backends:
 
@@ -66,6 +72,11 @@ HERMY currently provides:
 - A Hermes config template for CUA HTTP MCP plus HERMY Cube stdio MCP.
 - Unit tests for the local integration layer.
 - A standalone doctor script for environment checks.
+- Session persistence: `RuntimeController` writes `hermy_sessions.json` on
+  every session change and recovers sessions (marked stale) on restart.
+- `scripts/verify_cua_proxy.py`: CUA proxy tool-filter verification script.
+- `scripts/verify_cube_bridge.py`: Cube bridge live verification stub (pending
+  full implementation — see ROADMAP in that file).
 
 HERMY does not provide:
 
@@ -349,11 +360,52 @@ export HERMY_UNSAFE_DISABLE_OUTPUT_REDACTION=0
 export HERMY_ALLOW_INTERNET=0
 export CUBE_EVENT_LOG=cube_events.jsonl
 export CUBE_STRICT_AUDIT_LOGGING=0
+export HERMY_SESSION_FILE=hermy_sessions.json
 ```
+
+Set `HERMY_SESSION_FILE=none` to disable session persistence entirely.
 
 This policy layer is a baseline, not a complete sandbox security model. The
 real security boundary must come from CubeSandbox or another properly isolated
 execution backend.
+
+## Path Confinement Limitations
+
+HERMY validates path strings under the workspace root on the host side only.
+It cannot detect symlinks that exist *inside* the sandbox filesystem. For
+example, if a sandbox contains `/workspace/link -> /etc`, the path string
+`/workspace/link/file` passes HERMY policy even though the real target is
+outside `/workspace`.
+
+The real confinement boundary must come from CubeSandbox or another properly
+isolated execution backend. If symlink escape is a concern:
+
+- Mount `/workspace` with `nosuid,nodev`.
+- Use a read-only rootfs outside `/workspace`.
+- Validate that the backend rejects symlink traversal at the syscall layer.
+
+See `controller/policy.py` docstring on `validate_workspace_path` and
+`tests/test_policy.py` for the documented limitation tests.
+
+## Known Limitations
+
+- **Approval ledger:** `approval_id` proves only string existence. A durable
+  ledger binding an approval to a user, action, and expiry is pending. See
+  `controller/approval_ledger.py`.
+- **Session persistence:** Sessions are persisted to `hermy_sessions.json`
+  and recovered as `stale` on restart. Live re-validation against the Cube
+  API is not performed automatically.
+- **Symlink confinement:** HERMY cannot verify sandbox-internal symlinks.
+  Backend must enforce workspace confinement independently.
+- **CUA tool schemas:** Proxy tool argument schemas are `**kwargs`. Upstream
+  descriptions are injected as docstrings only. FastMCP does not support
+  dynamic `inputSchema` injection.
+- **Live Cube verification:** `scripts/verify_cube_bridge.py` is a stub.
+  Use `python scripts/hermy_doctor.py --live-cube-smoke` for the existing
+  opt-in smoke test.
+- **No per-user authorization layer.**
+- **No sandbox quota system.**
+- **No supervisor/launcher** — start CUA, Cube, and Hermes manually.
 
 ## Live Verification Checklist
 
@@ -370,6 +422,8 @@ A live environment is ready only after all of these are true:
 - Unknown Cube sandbox IDs are rejected before any backend call is made.
 - A Cube sandbox can write and read a file under `/workspace`.
 - A write outside `/workspace` is rejected.
+- `python scripts/verify_cua_proxy.py` exits 0 (CUA proxy filter verified).
+- `python scripts/hermy_doctor.py --live-cube-smoke` passes (opt-in).
 
 Until those live checks pass, HERMY should be considered a clean integration
 scaffold, not a working deployed agent runtime.
