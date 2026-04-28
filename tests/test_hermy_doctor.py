@@ -66,6 +66,7 @@ def test_doctor_live_rejects_invalid_url(monkeypatch):
     monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
     monkeypatch.setattr(doctor, "REQUIRED_IMPORTS", ())
     monkeypatch.setattr(doctor, "_check_bridge_tools", lambda: doctor._result("PASS", "bridge:tools", "ok"))
+    monkeypatch.setattr(doctor, "_check_tcp_url", lambda name, url, timeout: doctor._result("FAIL", name, "invalid URL"))
     monkeypatch.setattr(doctor, "_check_mcp_http_tools", lambda name, url, timeout: doctor._result("FAIL", name, "invalid URL"))
     args = doctor.build_parser().parse_args(["--skip-env", "--live", "--cua-url", "not-a-url"])
 
@@ -79,6 +80,7 @@ def test_doctor_live_fails_cleanly_on_unreachable_service(monkeypatch):
     monkeypatch.setattr(doctor, "REQUIRED_PYTHON", (0, 0))
     monkeypatch.setattr(doctor, "REQUIRED_IMPORTS", ())
     monkeypatch.setattr(doctor, "_check_bridge_tools", lambda: doctor._result("PASS", "bridge:tools", "ok"))
+    monkeypatch.setattr(doctor, "_check_tcp_url", lambda name, url, timeout: doctor._result("FAIL", name, "unreachable"))
     monkeypatch.setattr(doctor, "_check_mcp_http_tools", lambda name, url, timeout: doctor._result("FAIL", name, "unreachable"))
     args = doctor.build_parser().parse_args(
         ["--skip-env", "--live", "--cua-url", "http://127.0.0.1:9/mcp", "--cube-url", "http://127.0.0.1:9"]
