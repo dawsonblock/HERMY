@@ -404,3 +404,32 @@ def test_policy_max_code_bytes_reads_env(monkeypatch):
     monkeypatch.setenv("HERMY_MAX_CODE_BYTES", "123")
 
     assert policy.max_code_bytes() == 123
+
+
+def test_read_file_output_is_truncated_by_policy(monkeypatch):
+    """read_file content larger than HERMY_MAX_OUTPUT_BYTES must be truncated."""
+    monkeypatch.setenv("CUBE_WORKSPACE_DIR", "/workspace")
+    monkeypatch.setenv("HERMY_MAX_OUTPUT_BYTES", "10")
+
+    class BigContentCubeClient(FakeCubeClient):
+        def cube_read_file(self, **kwargs):
+            self.calls.append(("cube_read_file", kwargs))
+            return {
+                "ok": True,
+                "sandbox_id": kwargs["sandbox_id"],
+                "path": kwargs["path"],
+                "content": "A" * 100,
+                "error": None,
+            }
+
+    cube = BigContentCubeClient()
+    controller = RuntimeController(cua_client=None, cube_client=cube)
+    controller.handle_code_request({"op": "create", "template_id": "tpl-1"})
+
+    response = controller.handle_code_request(
+        {"op": "read_file", "sandbox_id": "sbx-1", "path": "/workspace/big.txt"}
+    )
+
+    assert response["ok"] is True
+    assert response["truncated"] is True
+    assert len(response["content"].encode("utf-8")) <= 10 + len(b"\n[HERMY output truncated]\n")

@@ -102,8 +102,12 @@ ALLOWED_CUA_TOOLS: frozenset[str] = frozenset([
     "computer_find_element",
 ])
 
-# Questionable tools - included but logged as potentially risky
-# These could be used to open files or URLs, which might have security implications
+# Questionable tools - disabled by default, require explicit env opt-in.
+# computer_open and computer_launch_app can open browsers, terminals, file
+# managers, credential stores, or local apps and are an escape path on
+# non-disposable desktops.
+# Each tool is gated behind its own env flag so operators can enable only
+# what they actually need.
 QUESTIONABLE_CUA_TOOLS: frozenset[str] = frozenset([
     "computer_clipboard_get",
     "computer_clipboard_set",
@@ -111,6 +115,16 @@ QUESTIONABLE_CUA_TOOLS: frozenset[str] = frozenset([
     "computer_launch_app",
     "computer_set_wallpaper",
 ])
+
+# Per-tool env flags that enable individual questionable tools.
+# Default: all denied. Set the matching variable to "1" to allow.
+_QUESTIONABLE_TOOL_ENV_FLAGS: dict[str, str] = {
+    "computer_clipboard_get": "HERMY_ALLOW_CUA_CLIPBOARD",
+    "computer_clipboard_set": "HERMY_ALLOW_CUA_CLIPBOARD",
+    "computer_open": "HERMY_ALLOW_CUA_OPEN",
+    "computer_launch_app": "HERMY_ALLOW_CUA_LAUNCH_APP",
+    "computer_set_wallpaper": "HERMY_ALLOW_CUA_WALLPAPER",
+}
 
 # Forbidden tools - these will be explicitly rejected
 FORBIDDEN_CUA_TOOLS: frozenset[str] = frozenset([
@@ -125,6 +139,16 @@ FORBIDDEN_CUA_TOOLS: frozenset[str] = frozenset([
     "computer_delete_directory",
     "computer_get_file_size",
 ])
+
+
+def _enabled_questionable_tools() -> frozenset[str]:
+    """Return the subset of QUESTIONABLE_CUA_TOOLS enabled by env flags."""
+    enabled: set[str] = set()
+    for tool, env_flag in _QUESTIONABLE_TOOL_ENV_FLAGS.items():
+        if os.environ.get(env_flag, "").lower() in {"1", "true", "yes", "on"}:
+            enabled.add(tool)
+    return frozenset(enabled)
+
 
 ALL_ALLOWED_TOOLS = ALLOWED_CUA_TOOLS | QUESTIONABLE_CUA_TOOLS
 
@@ -189,14 +213,20 @@ class CuaMcpProxy:
 
     def _filter_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Filter tools to only allow safe GUI operations."""
+        enabled_questionable = _enabled_questionable_tools()
         filtered = []
         for tool in tools:
             name = tool.get("name", "")
             if name in ALLOWED_CUA_TOOLS:
                 filtered.append(tool)
             elif name in QUESTIONABLE_CUA_TOOLS:
-                LOGGER.warning(f"Including questionable tool: {name}")
-                filtered.append(tool)
+                if name in enabled_questionable:
+                    LOGGER.warning(f"Including questionable tool: {name}")
+                    filtered.append(tool)
+                else:
+                    LOGGER.info(
+                        f"Blocking questionable tool (not enabled by env): {name}"
+                    )
             elif name in FORBIDDEN_CUA_TOOLS:
                 LOGGER.info(f"Filtering out forbidden tool: {name}")
             else:
@@ -217,7 +247,22 @@ class CuaMcpProxy:
                 "isError": True,
             }
 
-        if name not in ALL_ALLOWED_TOOLS:
+        if name in QUESTIONABLE_CUA_TOOLS and name not in _enabled_questionable_tools():
+            env_flag = _QUESTIONABLE_TOOL_ENV_FLAGS.get(name, "the appropriate HERMY_ALLOW_CUA_* flag")
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Tool '{name}' is disabled by default. "
+                            f"Set {env_flag}=1 to enable it."
+                        ),
+                    }
+                ],
+                "isError": True,
+            }
+
+        if name not in ALLOWED_CUA_TOOLS and name not in _enabled_questionable_tools():
             return {
                 "content": [
                     {
@@ -265,8 +310,8 @@ For shell/file operations, use the HERMY Cube MCP bridge instead.
     for tool_name in sorted(ALLOWED_CUA_TOOLS):
         _register_tool_proxy(mcp, proxy, tool_name)
 
-    # Register questionable tools with warning
-    for tool_name in sorted(QUESTIONABLE_CUA_TOOLS):
+    # Register only the questionable tools currently enabled by env flags
+    for tool_name in sorted(_enabled_questionable_tools()):
         _register_tool_proxy(mcp, proxy, tool_name, questionable=True)
 
     # Store proxy reference for cleanup

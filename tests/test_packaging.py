@@ -18,8 +18,9 @@ def test_pyproject_packages_only_local_integration_modules():
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert data["project"]["requires-python"] == ">=3.11"
-    assert data["tool"]["setuptools"]["packages"] == ["cube_bridge", "controller"]
+    assert data["tool"]["setuptools"]["packages"] == ["cube_bridge", "cua_bridge", "controller"]
     assert "hermy-cube-mcp" in data["project"]["scripts"]
+    assert "hermy-cua-mcp" in data["project"]["scripts"]
     assert "hermy-doctor" not in data["project"].get("scripts", {})
 
 

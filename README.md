@@ -35,7 +35,7 @@ valid `CUBE_TEMPLATE_ID`.
 
 ```text
 User / Hermes
-  -> CUA MCP HTTP server for GUI actions
+  -> HERMY CUA MCP proxy (stdio) -> CUA MCP HTTP server (GUI only)
   -> HERMY Cube MCP stdio bridge
        -> RuntimeController
        -> Policy
@@ -43,10 +43,16 @@ User / Hermes
        -> /workspace
 ```
 
-Hermes should connect to CUA directly over HTTP MCP. Hermes should connect to
-Cube through the local HERMY stdio MCP bridge. CUA is GUI-only unless you have
-deliberately isolated it for a broader role. Cube is the only HERMY code and
-shell execution backend.
+Hermes must connect to CUA through the HERMY CUA MCP proxy (`hermy-cua-mcp`).
+The proxy allowlists safe GUI tools and blocks shell/file tools before they
+reach Hermes. Hermes must connect to Cube through the HERMY Cube MCP bridge
+(`hermy-cube-mcp`). Cube is the only HERMY code and shell execution backend.
+
+Do not connect Hermes directly to the raw CUA HTTP MCP endpoint. Direct
+connection bypasses HERMY's tool filter and allows Hermes to see shell/file
+tools. If you need direct access for local development only, mark that
+configuration explicitly as unsafe/dev-only and do not use it in any
+environment where the desktop matters.
 
 ## Current Scope
 
@@ -246,10 +252,14 @@ platform_toolsets:
   cli: ["web", "browser", "vision", "image_gen", "skills", "todo", "memory", "session_search", "clarify", "cua", "cube"]
 
 mcp_servers:
+  # Route CUA through the HERMY proxy so shell/file tools are blocked.
   cua:
-    url: "http://127.0.0.1:8000/mcp"
+    command: "hermy-cua-mcp"
+    args: []
     timeout: 60
     connect_timeout: 10
+    env:
+      HERMY_UPSTREAM_CUA_URL: "http://127.0.0.1:8000/mcp"
 
   cube:
     command: "hermy-cube-mcp"
