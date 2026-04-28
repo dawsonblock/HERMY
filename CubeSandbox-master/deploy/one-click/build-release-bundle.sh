@@ -217,6 +217,12 @@ find "${PACKAGE_ROOT}/scripts/one-click" -type f -name "*.sh" -exec chmod +x {} 
 mkdir -p "$(dirname "${PACKAGE_TAR}")"
 tar -C "${WORK_ROOT}" -czf "${PACKAGE_TAR}" "sandbox-package"
 
+log "generating bundle manifest"
+"${SCRIPT_DIR}/generate-bundle-manifest.sh" "${PACKAGE_ROOT}" "${PACKAGE_ROOT}/MANIFEST.sha256"
+
+log "validating bundle"
+"${SCRIPT_DIR}/validate-bundle.sh" "${PACKAGE_ROOT}" --manifest "${PACKAGE_ROOT}/MANIFEST.sha256"
+
 mkdir -p "${DIST_ROOT}/assets/package" "${DIST_ROOT}/assets/kernel-artifacts" "${DIST_ROOT}/lib"
 copy_file "${SCRIPT_DIR}/README.md" "${DIST_ROOT}/README.md"
 copy_file "${SCRIPT_DIR}/install.sh" "${DIST_ROOT}/install.sh"
@@ -227,6 +233,7 @@ copy_file "${SCRIPT_DIR}/online-install.sh" "${DIST_ROOT}/online-install.sh"
 copy_file "${SCRIPT_DIR}/env.example" "${DIST_ROOT}/env.example"
 copy_file "${SCRIPT_DIR}/lib/common.sh" "${DIST_ROOT}/lib/common.sh"
 copy_file "${PACKAGE_TAR}" "${DIST_ROOT}/assets/package/sandbox-package.tar.gz"
+copy_file "${PACKAGE_ROOT}/MANIFEST.sha256" "${DIST_ROOT}/assets/package/MANIFEST.sha256"
 copy_file "${KERNEL_ARTIFACT_ZIP}" "${DIST_ROOT}/assets/kernel-artifacts/cube-kernel-scf.zip"
 chmod +x \
   "${DIST_ROOT}/install.sh" \
