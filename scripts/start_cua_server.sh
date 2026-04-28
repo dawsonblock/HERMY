@@ -19,7 +19,7 @@ command -v cua-computer-server >/dev/null || {
 
 CUA_HELP="$(cua-computer-server --help 2>&1 || true)"
 if [ -n "$CUA_HELP" ]; then
-  for flag in --host --port --width --height --mcp; do
+  for flag in --host --port --width --height; do
     if ! printf '%s\n' "$CUA_HELP" | grep -q -- "$flag"; then
       echo "Warning: cua-computer-server help did not advertise $flag; validate this vendored CUA version before live use." >&2
     fi
@@ -29,9 +29,9 @@ fi
 echo "Starting CUA computer server on $CUA_HOST:$CUA_PORT (${CUA_WIDTH}x${CUA_HEIGHT})"
 echo "Expected CUA MCP URL: http://$CUA_HOST:$CUA_PORT/mcp"
 
+# Run CUA server. MCP endpoint is automatically mounted at /mcp when fastmcp is installed.
 exec cua-computer-server \
   --host "$CUA_HOST" \
   --port "$CUA_PORT" \
   --width "$CUA_WIDTH" \
-  --height "$CUA_HEIGHT" \
-  --mcp
+  --height "$CUA_HEIGHT"

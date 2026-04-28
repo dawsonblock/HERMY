@@ -64,6 +64,19 @@ HOST_EXECUTION_TOOL_NAMES = (
     "execute_code",
 )
 HERMES_REGISTRY_TIMEOUT_SECONDS = 30
+# CUA tools that should be blocked by HERMY proxy (not exposed directly to Hermes)
+FORBIDDEN_CUA_TOOLS = (
+    "computer_run_command",
+    "computer_file_read",
+    "computer_file_write",
+    "computer_file_exists",
+    "computer_directory_exists",
+    "computer_list_directory",
+    "computer_create_directory",
+    "computer_delete_file",
+    "computer_delete_directory",
+    "computer_get_file_size",
+)
 BRIDGE_TOOLS = (
     "cube_health",
     "cube_create",
@@ -245,6 +258,15 @@ def _has_legacy_terminal_none(text: str) -> bool:
     return bool(re.search(r"(?ms)^terminal:\s*\n(?:\s+.*\n)*?\s+backend:\s*[\"']?none[\"']?", text))
 
 
+def _has_raw_cua_url(text: str) -> bool:
+    """Detect if config has raw CUA URL (unsafe direct connection)."""
+    # Match cua: followed by url: "http..." pattern
+    return bool(re.search(
+        r"(?ms)^\s*cua\s*:\s*\n(?:\s+.*\n)*?\s+url\s*:\s*[\"']?http",
+        text
+    ))
+
+
 def _check_hermes_config(path: Path) -> list[CheckResult]:
     if not path.exists():
         return [_result("FAIL", "hermes_config", f"not found: {path}")]
@@ -276,6 +298,12 @@ def _check_hermes_config(path: Path) -> list[CheckResult]:
 
     if _has_legacy_terminal_none(text) and not safe_toolsets:
         checks.append(_result("WARN", "hermes:terminal_backend", "legacy terminal.backend none is not a supported safety control"))
+
+    # Check for raw CUA URL (unsafe direct connection)
+    if _has_raw_cua_url(text):
+        checks.append(_result("FAIL", "hermes:cua_connection", "config uses raw CUA URL instead of HERMY CUA proxy - use command: hermy-cua-mcp"))
+    else:
+        checks.append(_result("PASS", "hermes:cua_connection", "config uses HERMY CUA proxy (stdio MCP)"))
 
     return checks
 
@@ -427,6 +455,18 @@ def _check_mcp_http_tools(name: str, url: str, timeout: float) -> CheckResult:
     tools = payload.get("result", {}).get("tools")
     if not isinstance(tools, list):
         return _result("FAIL", name, "MCP tools/list response did not include result.tools")
+
+    # Check for forbidden CUA tools (only relevant for CUA checks)
+    if "cua" in name.lower():
+        tool_names = {t.get("name", "") for t in tools}
+        exposed_forbidden = sorted(tool_names & set(FORBIDDEN_CUA_TOOLS))
+        if exposed_forbidden:
+            return _result(
+                "FAIL",
+                name,
+                f"forbidden tools exposed: {', '.join(exposed_forbidden)} - use HERMY CUA proxy"
+            )
+
     return _result("PASS", name, f"discovered {len(tools)} tool(s)")
 
 

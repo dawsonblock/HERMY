@@ -8,10 +8,15 @@ model:
   model: gpt-4
 
 mcp_servers:
+  # HERMY CUA Proxy - filters dangerous tools, only allows safe GUI operations.
+  # Connects to upstream CUA at HERMY_UPSTREAM_CUA_URL (default: http://127.0.0.1:8000/mcp)
   cua:
-    url: "http://127.0.0.1:8000/mcp"
+    command: "hermy-cua-mcp"
+    args: []
     timeout: 60
     connect_timeout: 10
+    env:
+      HERMY_UPSTREAM_CUA_URL: "http://127.0.0.1:8000/mcp"
 
   cube:
     command: "hermy-cube-mcp"

@@ -5,3 +5,5 @@ cube_events.jsonl
 *.egg-info/
 build/
 dist/
+
+.fake

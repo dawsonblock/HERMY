@@ -28,9 +28,10 @@ test = [
 
 [project.scripts]
 hermy-cube-mcp = "cube_bridge.cube_mcp_server:main"
+hermy-cua-mcp = "cua_bridge.cua_mcp_proxy:main"
 
 [tool.setuptools]
-packages = ["cube_bridge", "controller"]
+packages = ["cube_bridge", "cua_bridge", "controller"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

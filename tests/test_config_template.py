@@ -8,10 +8,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_config_template_declares_cua_http_and_cube_stdio():
+def test_config_template_declares_hermy_cua_proxy_and_cube_stdio():
     text = (ROOT / "config" / "hermes_config_template.yaml").read_text(encoding="utf-8")
 
-    assert 'url: "http://127.0.0.1:8000/mcp"' in text
+    # HERMY CUA Proxy (stdio MCP) instead of direct HTTP to raw CUA
+    assert 'command: "hermy-cua-mcp"' in text
+    assert "HERMY_UPSTREAM_CUA_URL" in text
+    # Raw CUA URL should NOT be in config (direct connection bypasses HERMY proxy)
+    assert 'url: "http://127.0.0.1:8000/mcp"' not in text
     assert 'command: "hermy-cube-mcp"' in text
     assert "platform_toolsets:" in text
     assert '"cua", "cube"' in text
