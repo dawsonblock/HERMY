@@ -1,18 +1,9 @@
 {
   "sbx-1": {
     "sandbox_id": "sbx-1",
-    "template_id": "tpl",
-    "created_at": "2026-04-28T23:06:48.970045Z",
-    "last_used_at": "2026-04-28T23:06:48.970045Z",
-    "allow_internet": false,
-    "status": "stale",
-    "metadata": {}
-  },
-  "sbx-gov-1": {
-    "sandbox_id": "sbx-gov-1",
     "template_id": "tpl-1",
-    "created_at": "2026-04-28T23:06:49.020564Z",
-    "last_used_at": "2026-04-28T23:06:49.020564Z",
+    "created_at": "2026-04-28T23:07:52.288689Z",
+    "last_used_at": "2026-04-28T23:07:52.288689Z",
     "allow_internet": false,
     "status": "active",
     "metadata": {}
