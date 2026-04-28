@@ -31,6 +31,16 @@
 
 ---
 
+## Platform Requirements
+
+> **Server infrastructure:** CubeSandbox is **x86\_64 Linux/KVM server infrastructure**. It requires a bare-metal or dedicated VM host with `/dev/kvm` exposed, at least 8 GB RAM, and an XFS-formatted partition at `/data/cubelet`. It **does not run** on macOS, Windows, ARM hosts, or shared cloud VMs that do not expose KVM.
+>
+> **iPhone / mobile:** Mobile device support is **client-only**. iPhone, Android, and other mobile clients interact with CubeSandbox exclusively through its remote E2B-compatible REST API (`cube-api`). No CubeSandbox server component runs on a mobile device.
+>
+> **Production readiness:** This repository is a work-in-progress. Do not treat it as production-ready without independent security and operational review of your deployment.
+
+---
+
 Cube Sandbox is a high-performance, out-of-the-box secure sandbox service built on RustVMM and KVM. It supports both single-node deployment and can be easily scaled to a multi-node cluster. It is compatible with the E2B SDK, capable of creating a hardware-isolated sandbox environment with full service capabilities in under 60ms, while maintaining less than 5MB memory overhead.
 
 

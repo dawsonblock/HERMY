@@ -36,6 +36,7 @@ make all
 # Build individual components
 make cubemaster
 make cubelet
+make network-agent
 make agent
 make shim
 ```

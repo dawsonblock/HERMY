@@ -40,8 +40,20 @@ env:
   BUILDER_IMAGE_LOCAL: cube-sandbox-builder:ci
 
 jobs:
+  required-path-audit:
+    name: Required path audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Audit required paths
+        shell: bash
+        run: bash scripts/audit-required-paths.sh "${GITHUB_WORKSPACE}"
+
   build:
     name: Build ${{ matrix.component }}
+    needs: required-path-audit
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -210,3 +222,91 @@ jobs:
               exit 1
             fi
           done <<< "${EXPECTED_BINS}"
+
+  bundle-build:
+    name: One-click bundle script validation
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate bundle script syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Checking shell syntax of one-click build/deploy scripts..."
+          bash -n CubeSandbox-master/deploy/one-click/build-release-bundle.sh
+          bash -n CubeSandbox-master/deploy/one-click/build-release-bundle-builder.sh
+          bash -n CubeSandbox-master/deploy/one-click/install.sh
+          bash -n CubeSandbox-master/deploy/one-click/scripts/one-click/up.sh
+          bash -n CubeSandbox-master/deploy/one-click/scripts/one-click/up-compute.sh
+          echo "All bundle scripts passed syntax check."
+
+      - name: Validate sourced library files are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_files=(
+            "CubeSandbox-master/deploy/one-click/lib/common.sh"
+            "CubeSandbox-master/deploy/one-click/scripts/one-click/common.sh"
+          )
+          fail=0
+          for f in "${required_files[@]}"; do
+            if [[ -f "${f}" ]]; then
+              echo "  PASS  ${f}"
+            else
+              echo "  FAIL  MISSING: ${f}" >&2
+              fail=1
+            fi
+          done
+          exit "${fail}"
+
+  docs-path-consistency:
+    name: Docs path consistency check
+    runs-on: ubuntu-latest
+    needs: required-path-audit
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check docs do not reference non-existent component directories
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Extract bare component directory names referenced in docs
+          # and verify each one exists in the repository.
+          # Only check top-level component directories to avoid false positives
+          # from prose references to sub-paths that may not yet be created.
+          COMPONENTS=(
+            network-agent
+            CubeMaster
+            Cubelet
+            CubeAPI
+            CubeShim
+            CubeProxy
+            CubeNet
+            agent
+            hypervisor
+            cubelog
+            configs
+            deploy
+            docs
+          )
+
+          fail=0
+          for component in "${COMPONENTS[@]}"; do
+            # Check if docs mention the component
+            if grep -rql "${component}" CubeSandbox-master/docs/ 2>/dev/null; then
+              # Confirm the directory actually exists
+              if [[ ! -d "CubeSandbox-master/${component}" ]]; then
+                echo "FAIL: docs reference '${component}' but CubeSandbox-master/${component}/ is missing" >&2
+                fail=1
+              else
+                echo "  PASS  ${component}"
+              fi
+            fi
+          done
+
+          exit "${fail}"
