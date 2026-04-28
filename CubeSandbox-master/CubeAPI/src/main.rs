@@ -223,6 +223,27 @@ async fn async_main(cfg: config::ServerConfig, debug: bool) -> anyhow::Result<()
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     tracing::info!("cube-api listening on {}", cfg.bind);
 
+    // Warn when binding a non-loopback address without authentication.
+    // Loopback addresses (127.x.x.x, ::1) are considered local-only.
+    // Wildcard addresses (0.0.0.0, ::) are public by default.
+    // Users are expected to set --auth-callback-url for any non-local deployment.
+    if cfg.auth_callback_url.as_deref().map_or(true, str::is_empty) {
+        let host = cfg.bind.split(':').next().unwrap_or("");
+        let is_loopback = host == "127.0.0.1"
+            || host.starts_with("127.")
+            || host == "::1"
+            || host == "localhost";
+        if !is_loopback {
+            tracing::warn!(
+                bind = %cfg.bind,
+                "SECURITY: cube-api is bound to a public interface without authentication. \
+                 All API endpoints are accessible without credentials. \
+                 Set --auth-callback-url (or AUTH_CALLBACK_URL) before exposing this service \
+                 on a network-accessible address. Unauthenticated mode is local-only."
+            );
+        }
+    }
+
     // ── Graceful shutdown ──────────────────────────────────────────────────
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

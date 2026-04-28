@@ -56,6 +56,17 @@ REQUIRED_DIRS=(
   "CubeSandbox-master/network-agent/cmd/network-agent"
   "CubeSandbox-master/network-agent/api/v1"
   "CubeSandbox-master/network-agent/internal"
+  "CubeSandbox-master/network-agent/internal/service"
+  "CubeSandbox-master/network-agent/internal/grpcserver"
+  "CubeSandbox-master/network-agent/internal/httpserver"
+  "CubeSandbox-master/network-agent/internal/fdserver"
+
+  # network-agent proto sync target in Cubelet
+  "CubeSandbox-master/Cubelet/pkg/networkagentclient/pb"
+
+  # shared libraries that network-agent depends on
+  "CubeSandbox-master/CubeNet/cubevs"
+  "CubeSandbox-master/cubelog"
 
   # Go components
   "CubeSandbox-master/CubeMaster"
@@ -85,6 +96,14 @@ REQUIRED_FILES=(
   # network-agent source files
   "CubeSandbox-master/network-agent/Makefile"
   "CubeSandbox-master/network-agent/go.mod"
+
+  # proto contract — canonical source and Cubelet sync target must both exist
+  "CubeSandbox-master/network-agent/api/v1/network_agent.proto"
+  "CubeSandbox-master/Cubelet/pkg/networkagentclient/pb/network_agent.proto"
+
+  # shared library entry points
+  "CubeSandbox-master/CubeNet/cubevs/cubevs.go"
+  "CubeSandbox-master/cubelog/log.go"
 
   # configs referenced by deploy scripts
   "CubeSandbox-master/configs/single-node/network-agent.yaml"

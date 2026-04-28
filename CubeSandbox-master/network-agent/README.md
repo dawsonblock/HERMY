@@ -1,37 +1,69 @@
 # network-agent
 
-`network-agent` 是开源版 MVP 新增的节点本地网络组件。
+**Status: local-node MVP — not production-ready. Not VPC/ENI/CubeGW parity.**
 
-它不来自闭源仓的整目录复制，而是在保持 `Cubelet`、`mvs` 同源迁移的前提下新增。
+`network-agent` is the node-local network orchestration component for CubeSandbox.
+It runs as a standalone process alongside `Cubelet` on each node and owns all
+sandbox network lifecycle operations that were previously embedded in `Cubelet`.
 
-当前职责边界：
+## What is implemented
 
-- 承接从 `Cubelet` 迁出的节点本地网络编排
-- 复用 `mvs/cubevs` 的本地网络执行能力
-- 对 `Cubelet` 提供独立的 `ensure / release / reconcile / health` 接口
+| Feature | Status |
+|---|---|
+| `EnsureNetwork` — TAP creation, cubevs registration, ARP/route setup | ✅ |
+| `ReleaseNetwork` — TAP teardown, cubevs unregister, proxy cleanup | ✅ |
+| `ReconcileNetwork` — reattach cubevs filter, restore routes/ARP | ✅ |
+| `GetNetwork` / `ListNetworks` — state query | ✅ |
+| TAP pool with recycle-on-release | ✅ |
+| Abnormal TAP recovery with quarantine after repeated failures | ✅ |
+| HostPort → guest userspace proxy | ✅ |
+| State persistence to disk, recovery on restart | ✅ |
+| gRPC server (`/tmp/cube/network-agent-grpc.sock`) | ✅ |
+| HTTP health probes (`/healthz`, `/readyz`) | ✅ |
+| TAP FD server (`/tmp/cube/network-agent-tap.sock`) | ✅ |
 
-当前目录已补上单机 MVP 所需的最小执行闭环：
+## What is NOT in scope for this MVP
 
-- `EnsureNetwork` / `ReleaseNetwork` / `ReconcileNetwork` / `GetNetwork`
-- 本地 TAP 创建与 `cubevs` 映射
-- HostPort 到 guest 服务的用户态代理
-- 本地状态落盘与启动恢复
+- VPC / ENI / SubENI integration
+- `networkd` or `CubeGW` tunnel-group orchestration
+- Multi-node overlay or cross-host routing
+- Production hardening, HA, or observability beyond local logs
 
-仍然不在首发范围内的内容：
+## Directory layout
 
-- VPC / ENI / SubENI
-- `networkd`
-- `CubeGW` / tunnel group 编排
+```text
+network-agent/
+  api/v1/               gRPC proto contract (kept in sync with Cubelet/pkg/networkagentclient/pb/)
+  cmd/network-agent/    binary entry point
+  internal/
+    service/            core network lifecycle logic and unit tests
+    grpcserver/         gRPC server wrapping service
+    httpserver/         HTTP health probe server
+    fdserver/           TAP file-descriptor passing server
+  go.mod                Go module (local replace directives for CubeNet/cubevs and cubelog)
+  Makefile              build, proto, test targets
+```
 
-当前目录仍保留按模块继续收敛的空间：
+## Building
 
-- `cmd/`
-- `api/v1/`
-- `internal/`
+```bash
+# From the repo root:
+make network-agent
 
-## 当前可用内容
+# Or from this directory:
+make build
+```
 
-- `api/v1/network_agent.proto`：最小 RPC contract 草案
-- `cmd/network-agent/main.go`：可执行入口占位
-- `internal/service/service.go`：最小 service 抽象和 noop 实现
-- `internal/httpserver/server.go`：`/healthz`、`/readyz` 探针服务
+## Running tests
+
+```bash
+cd network-agent
+go test ./...
+```
+
+## Proto sync
+
+`api/v1/network_agent.proto` is the canonical source.
+`Cubelet/pkg/networkagentclient/pb/network_agent.proto` is the synced client copy.
+These two files must remain byte-identical. Run `scripts/check-proto-drift.sh` or
+`make proto` inside this directory to regenerate and sync.
