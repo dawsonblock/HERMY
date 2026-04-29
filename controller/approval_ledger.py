@@ -21,6 +21,7 @@ Security:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -70,6 +71,22 @@ class ApprovalLedger:
 
     def consume(self, approval_id: str) -> None:
         """Mark an approval as consumed so it cannot be replayed."""
+        raise NotImplementedError
+
+    def validate_and_consume(self, approval_id: str, action: str) -> bool:
+        """Atomically validate and consume an approval.
+
+        This is the production method for approval validation. It uses OS-level
+        file locking to prevent race conditions where two concurrent calls could
+        both validate the same approval before either consumes it.
+
+        Args:
+            approval_id: The approval ID to validate and consume
+            action: The command/action being approved (must match recorded action)
+
+        Returns:
+            True if approval was valid and is now consumed, False otherwise
+        """
         raise NotImplementedError
 
 
@@ -190,7 +207,11 @@ class FileApprovalLedger(ApprovalLedger):
             return True
 
     def consume(self, approval_id: str) -> None:
-        """Mark an approval as consumed so it cannot be replayed."""
+        """Mark an approval as consumed so it cannot be replayed.
+
+        Note: For production validation, use validate_and_consume() which is
+        atomic and cross-process safe. This method is for tests/manual tooling.
+        """
         with self._lock:
             entries = self._load_entries()
             entry = entries.get(approval_id)
@@ -205,6 +226,80 @@ class FileApprovalLedger(ApprovalLedger):
             entry["consumed_at"] = _utc_now()
             self._save_entries(entries)
             _LOG.info("Consumed approval %s", approval_id)
+
+    def validate_and_consume(self, approval_id: str, action: str) -> bool:
+        """Atomically validate and consume an approval using OS-level file locking.
+
+        This method uses fcntl.flock() to ensure that validate-and-consume is
+        atomic across processes, not just threads. This prevents the time-of-check
+        time-of-use race where two concurrent calls could both validate the same
+        approval before either consumes it.
+
+        Args:
+            approval_id: The approval ID to validate and consume
+            action: The command/action being approved (must match recorded action)
+
+        Returns:
+            True if approval was valid and is now consumed, False otherwise
+        """
+        # Use a separate lock file for cross-process locking
+        lock_file = self._file.with_suffix(".lock")
+
+        try:
+            # Open or create lock file
+            lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR)
+
+            # Acquire exclusive lock (blocks until available)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+            try:
+                # Now safely load, validate, and consume
+                entries = self._load_entries()
+                entry = entries.get(approval_id)
+
+                if entry is None:
+                    _LOG.debug("Approval %s not found", approval_id)
+                    return False
+
+                if entry.get("consumed", False):
+                    _LOG.debug("Approval %s already consumed", approval_id)
+                    return False
+
+                # Check expiry
+                expires_at = entry.get("expires_at")
+                if expires_at:
+                    try:
+                        exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                        if datetime.now(tz=timezone.utc) > exp_dt:
+                            _LOG.debug("Approval %s expired", approval_id)
+                            return False
+                    except ValueError:
+                        _LOG.warning("Invalid expiry format for approval %s", approval_id)
+                        return False
+
+                # Check action match
+                if entry.get("action") != action:
+                    _LOG.debug(
+                        "Approval %s action mismatch: expected %s, got %s",
+                        approval_id, action, entry.get("action"),
+                    )
+                    return False
+
+                # All checks passed - consume atomically
+                entry["consumed"] = True
+                entry["consumed_at"] = _utc_now()
+                self._save_entries(entries)
+                _LOG.info("Atomically validated and consumed approval %s", approval_id)
+                return True
+
+            finally:
+                # Release lock
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+
+        except Exception as exc:
+            _LOG.error("Error during validate_and_consume: %s", exc)
+            return False
 
 
 def get_default_ledger() -> ApprovalLedger | None:

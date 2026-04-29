@@ -245,6 +245,75 @@ class TestFileApprovalLedger:
         # Should be invalid due to parse error
         assert not self.ledger.is_valid(approval_id, action)
 
+    def test_validate_and_consume_atomic(self) -> None:
+        """validate_and_consume returns True first time, False second time."""
+        approval_id = str(uuid.uuid4())
+        action = "ls -la | grep foo"
+
+        self.ledger.record(approval_id, action)
+
+        # First call should succeed
+        assert self.ledger.validate_and_consume(approval_id, action)
+
+        # Second call should fail (already consumed)
+        assert not self.ledger.validate_and_consume(approval_id, action)
+
+    def test_validate_and_consume_wrong_action(self) -> None:
+        """validate_and_consume fails if action doesn't match."""
+        approval_id = str(uuid.uuid4())
+        recorded_action = "ls -la"
+        different_action = "cat /etc/passwd"
+
+        self.ledger.record(approval_id, recorded_action)
+
+        # Should fail for different action
+        assert not self.ledger.validate_and_consume(approval_id, different_action)
+
+        # Should still be valid for correct action
+        assert self.ledger.validate_and_consume(approval_id, recorded_action)
+
+    def test_validate_and_consume_expired(self) -> None:
+        """validate_and_consume fails for expired approval."""
+        approval_id = str(uuid.uuid4())
+        action = "ls -la"
+
+        # Create an expired timestamp (1 hour ago)
+        expired_at = (datetime.now(tz=timezone.utc) - timedelta(hours=1)).isoformat()
+        self.ledger.record(approval_id, action, expires_at=expired_at)
+
+        # Should fail (expired)
+        assert not self.ledger.validate_and_consume(approval_id, action)
+
+    def test_concurrent_validate_and_consume(self) -> None:
+        """Two concurrent calls: exactly one succeeds, other fails.
+
+        This tests the OS-level file locking ensures atomicity across threads.
+        """
+        import concurrent.futures
+
+        approval_id = str(uuid.uuid4())
+        action = "ls -la | grep test"
+
+        self.ledger.record(approval_id, action)
+
+        results = []
+
+        def try_consume() -> bool:
+            # Create new ledger instance pointing to same file
+            # This simulates cross-process access
+            ledger2 = FileApprovalLedger(self.ledger_file)
+            return ledger2.validate_and_consume(approval_id, action)
+
+        # Launch two threads concurrently
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(try_consume) for _ in range(2)]
+            results = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+        # Exactly one should succeed
+        assert sum(results) == 1, f"Expected exactly one success, got {sum(results)} successes out of {len(results)}"
+        assert results.count(True) == 1
+        assert results.count(False) == 1
+
 
 class TestGetDefaultLedger:
     """Test get_default_ledger() function."""
@@ -362,6 +431,36 @@ class TestIntegrationWithPolicy:
         # Should be allowed with any non-empty approval_id
         decision = validate_command(command, approved=True, approval_id=approval_id)
         assert decision.allowed
+
+    def test_concurrent_policy_validation_atomic(self) -> None:
+        """Two concurrent validate_command calls: exactly one passes.
+
+        Tests that validate_and_consume is truly atomic at the policy level.
+        """
+        import concurrent.futures
+        from controller.policy import validate_command
+
+        approval_id = str(uuid.uuid4())
+        command = "ls -la | grep test"
+
+        # Record approval
+        ledger = FileApprovalLedger(self.ledger_file)
+        ledger.record(approval_id, command)
+
+        def try_validate() -> bool:
+            """Try to validate command with approval."""
+            decision = validate_command(command, approved=True, approval_id=approval_id)
+            return decision.allowed
+
+        # Launch two threads concurrently
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(try_validate) for _ in range(2)]
+            results = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+        # Exactly one should succeed
+        assert sum(results) == 1, f"Expected exactly one success, got {sum(results)}"
+        assert results.count(True) == 1
+        assert results.count(False) == 1
 
 
 if __name__ == "__main__":

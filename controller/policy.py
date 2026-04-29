@@ -208,19 +208,14 @@ def validate_command(
         if not approval_id or not str(approval_id).strip():
             return PolicyDecision(False, "shell control operators require a valid approval_id")
 
-        # Validate against ledger if configured
+        # Validate against ledger if configured (atomic validate-and-consume)
         ledger = approval_ledger.get_default_ledger()
         if ledger is not None:
-            if not ledger.is_valid(approval_id, command):
+            if not ledger.validate_and_consume(approval_id, command):
                 return PolicyDecision(
                     False,
-                    "approval_id is invalid, expired, or was already used"
+                    "approval_id is invalid, expired, already used, or action mismatch"
                 )
-            # Consume the approval (single-use)
-            try:
-                ledger.consume(approval_id)
-            except Exception as exc:
-                return PolicyDecision(False, f"could not consume approval: {exc}")
 
     try:
         parts = shlex.split(command, posix=True)

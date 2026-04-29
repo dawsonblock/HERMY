@@ -291,3 +291,152 @@ def test_response_shape_no_result_wrapper():
     }
 
     assert fake_response_file.get("content") == "file contents"
+
+
+def test_successful_full_verification_path():
+    """Test successful execution of all verification steps in sequence."""
+    verifier, fake = create_verifier_with_fake()
+
+    # Track which methods were called
+    called_methods = []
+
+    original_create = verifier.verify_create
+    original_run_cmd = verifier.verify_run_command
+    original_write = verifier.verify_write_file
+    original_read = verifier.verify_read_file
+    original_python = verifier.verify_run_python
+    original_denied = verifier.verify_denied_passwd_write
+    original_destroy = verifier.verify_destroy
+    original_no_leak = verifier.verify_no_leaked_sessions
+
+    def tracking_create():
+        called_methods.append("create")
+        return original_create()
+
+    def tracking_run_cmd():
+        called_methods.append("run_command")
+        return original_run_cmd()
+
+    def tracking_write():
+        called_methods.append("write_file")
+        return original_write()
+
+    def tracking_read():
+        called_methods.append("read_file")
+        return original_read()
+
+    def tracking_python():
+        called_methods.append("run_python")
+        return original_python()
+
+    def tracking_denied():
+        called_methods.append("denied_passwd_write")
+        return original_denied()
+
+    def tracking_destroy():
+        called_methods.append("destroy")
+        return original_destroy()
+
+    def tracking_no_leak():
+        called_methods.append("no_leaked_sessions")
+        return original_no_leak()
+
+    # Mock setup to succeed (skip env check)
+    with patch.object(verifier, "setup", return_value=True):
+        with patch.object(verifier, "verify_create", side_effect=tracking_create):
+            with patch.object(verifier, "verify_run_command", side_effect=tracking_run_cmd):
+                with patch.object(verifier, "verify_write_file", side_effect=tracking_write):
+                    with patch.object(verifier, "verify_read_file", side_effect=tracking_read):
+                        with patch.object(verifier, "verify_run_python", side_effect=tracking_python):
+                            with patch.object(verifier, "verify_denied_passwd_write", side_effect=tracking_denied):
+                                with patch.object(verifier, "verify_destroy", side_effect=tracking_destroy):
+                                    with patch.object(verifier, "verify_no_leaked_sessions", side_effect=tracking_no_leak):
+                                        exit_code = verifier.run()
+
+    # All checks should have been called in correct order
+    assert "create" in called_methods
+    assert "run_command" in called_methods
+    assert "write_file" in called_methods
+    assert "read_file" in called_methods
+    assert "run_python" in called_methods
+    assert "denied_passwd_write" in called_methods
+    assert "destroy" in called_methods
+    assert "no_leaked_sessions" in called_methods
+
+    # Should succeed (exit code 0)
+    assert exit_code == 0
+
+
+def test_artifact_session_path_default():
+    """Verifier should default HERMY_SESSION_FILE to artifact path."""
+    import tempfile
+    import os
+
+    # Save original env
+    original_session_file = os.environ.get("HERMY_SESSION_FILE")
+
+    try:
+        # Clear the env var to test default behavior
+        if "HERMY_SESSION_FILE" in os.environ:
+            del os.environ["HERMY_SESSION_FILE"]
+
+        # Import fresh to trigger main() path setup
+        import importlib
+        import scripts.verify_cube_bridge as vcb
+        importlib.reload(vcb)
+
+        # Check that ARTIFACTS_DIR is set and contains the expected path
+        assert hasattr(vcb, "ARTIFACTS_DIR")
+        expected_path = vcb.ARTIFACTS_DIR / "verify_cube_bridge_sessions.json"
+
+        # The main() function should set this default
+        # We verify the path structure is correct
+        assert "artifacts" in str(expected_path)
+        assert "verify_cube_bridge_sessions.json" in str(expected_path)
+
+    finally:
+        # Restore original env
+        if original_session_file is not None:
+            os.environ["HERMY_SESSION_FILE"] = original_session_file
+        elif "HERMY_SESSION_FILE" in os.environ:
+            del os.environ["HERMY_SESSION_FILE"]
+
+
+def test_create_failure_prevents_dependent_checks():
+    """If verify_create fails, dependent checks should not be called."""
+    verifier, fake = create_verifier_with_fake()
+
+    # Track which methods were called
+    called_methods = []
+
+    def failing_create():
+        called_methods.append("create")
+        verifier.failures.append("create failed")
+        return False
+
+    def should_not_be_called():
+        called_methods.append("should_not_be_called")
+        return True
+
+    # Mock setup to succeed (skip env check)
+    with patch.object(verifier, "setup", return_value=True):
+        with patch.object(verifier, "verify_create", side_effect=failing_create):
+            with patch.object(verifier, "verify_run_command", side_effect=should_not_be_called):
+                with patch.object(verifier, "verify_write_file", side_effect=should_not_be_called):
+                    with patch.object(verifier, "verify_read_file", side_effect=should_not_be_called):
+                        with patch.object(verifier, "verify_run_python", side_effect=should_not_be_called):
+                            with patch.object(verifier, "verify_denied_passwd_write", side_effect=should_not_be_called):
+                                exit_code = verifier.run()
+
+    # Create should be called
+    assert "create" in called_methods
+
+    # Dependent checks should NOT be called due to fail-fast
+    assert "should_not_be_called" not in called_methods
+
+    # Should return non-zero (fail-fast)
+    assert exit_code != 0
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

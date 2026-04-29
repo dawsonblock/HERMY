@@ -465,7 +465,30 @@ A live environment is ready only after all of these are true:
 - A Cube sandbox can write and read a file under `/workspace`.
 - A write outside `/workspace` is rejected.
 - `python scripts/verify_cua_proxy.py` exits 0 (CUA proxy filter verified).
-- `python scripts/hermy_doctor.py --live-cube-smoke` passes (opt-in).
+- `python scripts/verify_cube_bridge.py --live` passes (full Cube bridge verification).
+- `python scripts/hermy_doctor.py --live-cube-smoke` passes (basic backend smoke test).
 
-Until those live checks pass, HERMY should be considered a clean integration
-scaffold, not a working deployed agent runtime.
+**Verification Script Differences:**
+
+- `hermy_doctor.py --live-cube-smoke` — Basic backend connectivity test (quick smoke test).
+- `verify_cube_bridge.py --live` — Full HERMY Cube bridge verification including create,
+  command execution, file operations, Python execution, policy enforcement, and cleanup.
+
+**Required Environment for Live Cube Verification:**
+
+```bash
+export E2B_API_URL=http://<cube-host>:3000
+export E2B_API_KEY=your-api-key
+export CUBE_TEMPLATE_ID=your-template-id
+python scripts/verify_cube_bridge.py --live
+```
+
+**Infrastructure Requirements:**
+
+- Real Cube/E2B-compatible backend deployment
+- Valid sandbox template configured
+- Linux/KVM backend if using CubeSandbox directly
+- Network connectivity to Cube API endpoint
+
+Until those live checks pass, HERMY should be considered a locally verifiable
+integration scaffold, not a production-ready runtime.

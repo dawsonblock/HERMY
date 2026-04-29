@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 cube_events.jsonl
 hermy_sessions.json
+artifacts/
 *.egg-info/
 build/
 dist/

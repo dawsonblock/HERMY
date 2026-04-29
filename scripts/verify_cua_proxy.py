@@ -8,13 +8,13 @@ initialized notification + tools/list, and verifies:
   - Questionable tools are absent by default.
   - Questionable tools appear when the matching HERMY_ALLOW_CUA_* env flag is set.
 
-Features robust timeout handling (10s per read, 30s overall) and proper MCP
-lifecycle (initialize -> initialized notification -> tools/list).
+Features robust timeout handling (10s per read, 30s overall), process group
+management for clean termination, and proper MCP lifecycle.
 
 Exit codes:
   0  all checks passed
-  1  one or more checks failed
-  2  subprocess or JSON-RPC error
+  1  one or more checks failed (unsafe tool surface)
+  2  verifier could not run (timeout, startup failure, invalid MCP response)
 """
 
 from __future__ import annotations
@@ -22,9 +22,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
+import time
 from typing import Any
 
 # Timeouts in seconds
@@ -104,15 +106,27 @@ def _send_jsonrpc(
 
 
 def _kill_proc_cleanly(proc: subprocess.Popen) -> None:
-    """Kill a subprocess, trying graceful shutdown first."""
+    """Kill a subprocess and its process group, trying graceful shutdown first."""
     try:
-        # Try graceful termination first
-        proc.terminate()
+        # Try graceful termination of process group
+        if hasattr(signal, "SIGTERM"):
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                proc.terminate()
+        else:
+            proc.terminate()
         proc.wait(timeout=2)
     except (subprocess.TimeoutExpired, ProcessLookupError):
         try:
-            # Force kill if needed
-            proc.kill()
+            # Force kill process group if needed
+            if hasattr(signal, "SIGKILL"):
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    proc.kill()
+            else:
+                proc.kill()
             proc.wait(timeout=2)
         except (subprocess.TimeoutExpired, ProcessLookupError):
             pass
@@ -121,8 +135,16 @@ def _kill_proc_cleanly(proc: subprocess.Popen) -> None:
 def _list_tools_via_stdio(
     env: dict[str, str] | None = None,
     upstream_url: str | None = None,
+    overall_timeout: float = _OVERALL_TIMEOUT,
 ) -> list[str]:
-    """Launch CUA proxy, complete MCP handshake, and return tool list."""
+    """Launch CUA proxy, complete MCP handshake, and return tool list.
+
+    Enforces overall timeout across entire operation and uses process groups
+    for clean termination of child processes.
+    """
+    start_time = time.monotonic()
+    deadline = start_time + overall_timeout
+
     cmd = [sys.executable, "-m", "cua_bridge.cua_mcp_proxy"]
     proc_env = os.environ.copy()
     if env:
@@ -130,15 +152,22 @@ def _list_tools_via_stdio(
     if upstream_url:
         proc_env["HERMY_UPSTREAM_CUA_URL"] = upstream_url
 
+    # Launch in new process group for clean termination
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=proc_env,
+        start_new_session=True,  # Create new process group
     )
 
     try:
+        # Calculate remaining timeout for each operation
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MCPTimeoutError(f"Overall timeout ({overall_timeout}s) exceeded before starting")
+
         # Step 1: Send initialize request
         init_response = _send_jsonrpc(
             proc,
@@ -149,10 +178,16 @@ def _list_tools_via_stdio(
                 "clientInfo": {"name": "hermy-verifier", "version": "1"},
             },
             msg_id=1,
+            timeout=min(_READ_TIMEOUT, remaining),
         )
 
         if "error" in init_response:
             raise RuntimeError(f"Initialize failed: {init_response['error']}")
+
+        # Check deadline before continuing
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MCPTimeoutError(f"Overall timeout ({overall_timeout}s) exceeded after initialize")
 
         # Step 2: Send initialized notification (required by MCP spec)
         if proc.stdin is None:
@@ -164,8 +199,12 @@ def _list_tools_via_stdio(
         proc.stdin.write(initialized_notification.encode())
         proc.stdin.flush()
 
-        # Step 3: Request tools/list
-        resp = _send_jsonrpc(proc, "tools/list", {}, msg_id=2)
+        # Step 3: Request tools/list with remaining timeout
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MCPTimeoutError(f"Overall timeout ({overall_timeout}s) exceeded before tools/list")
+
+        resp = _send_jsonrpc(proc, "tools/list", {}, msg_id=2, timeout=min(_READ_TIMEOUT, remaining))
         tools = resp.get("result", {}).get("tools", [])
         return [t["name"] for t in tools if isinstance(t, dict) and "name" in t]
 
@@ -179,6 +218,13 @@ def _list_tools_via_stdio(
         # Ensure cleanup
         if proc.poll() is None:
             _kill_proc_cleanly(proc)
+        # Capture any stderr for diagnostics
+        try:
+            stderr_data = proc.stderr.read() if proc.stderr else b""
+            if stderr_data:
+                print(f"  DEBUG  Subprocess stderr: {stderr_data.decode('utf-8', errors='replace')[:500]}", file=sys.stderr)
+        except Exception:
+            pass
 
 
 def _check(label: str, condition: bool, detail: str = "") -> bool:
