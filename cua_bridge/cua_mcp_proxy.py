@@ -440,7 +440,7 @@ async def run_proxy_server(
         stream=sys.stderr,
     )
 
-    mcp = create_proxy_mcp_server(upstream_url)
+    mcp = await create_proxy_mcp_server_async(upstream_url)
 
     LOGGER.info(f"Starting HERMY CUA proxy (upstream: {get_upstream_cua_url()})")
 

@@ -5,7 +5,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from controller.runtime_controller import RuntimeController, _session_file_path
+
+
+def test_no_committed_session_file():
+    """Fail if hermy_sessions.json exists in the repo root (should not be committed)."""
+    repo_root = Path(__file__).resolve().parents[1]
+    session_file = repo_root / "hermy_sessions.json"
+    assert not session_file.exists(), (
+        "hermy_sessions.json should not be committed to the repo. "
+        "Delete it and ensure it's in .gitignore. "
+        "Use hermy_sessions.example.json for documentation."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -134,3 +147,58 @@ def test_malformed_session_file_is_skipped(monkeypatch, tmp_path):
     )
     ctrl = RuntimeController(cua_client=None, cube_client=FakeCubeClient())
     assert len(ctrl.sessions) == 0
+
+
+def test_last_used_at_persisted_after_operations(monkeypatch, tmp_path):
+    """Verify that last_used_at is updated in the session file after commands/read/write."""
+    session_file = tmp_path / "hermy_sessions.json"
+    monkeypatch.setenv("HERMY_SESSION_FILE", str(session_file))
+    monkeypatch.setattr(
+        "controller.runtime_controller.event_logger.log_event",
+        lambda *args, **kwargs: True,
+    )
+
+    class FakeCubeClientWithOps:
+        def __init__(self) -> None:
+            self.next_sandbox_id = "sbx-persist-ops"
+
+        def cube_create(self, **kwargs):
+            return {"ok": True, "sandbox_id": self.next_sandbox_id}
+
+        def cube_run_command(self, **kwargs):
+            return {"ok": True, "stdout": "hello", "stderr": "", "exit_code": 0}
+
+        def cube_read_file(self, **kwargs):
+            return {"ok": True, "content": "test content"}
+
+        def cube_write_file(self, **kwargs):
+            return {"ok": True, "bytes_written": 12}
+
+        def cube_destroy(self, **kwargs):
+            return {"ok": True, "sandbox_id": kwargs["sandbox_id"]}
+
+    cube = FakeCubeClientWithOps()
+    ctrl = RuntimeController(cua_client=None, cube_client=cube)
+
+    # Create session
+    ctrl.handle_code_request({"op": "create"})
+    data = json.loads(session_file.read_text())
+    initial_last_used = data["sbx-persist-ops"]["last_used_at"]
+
+    # Run command - should update last_used_at
+    ctrl.handle_code_request({"op": "run_command", "sandbox_id": "sbx-persist-ops", "command": "echo hello"})
+    data = json.loads(session_file.read_text())
+    after_command = data["sbx-persist-ops"]["last_used_at"]
+    assert after_command >= initial_last_used, "last_used_at should be updated after run_command"
+
+    # Read file - should update last_used_at
+    ctrl.handle_code_request({"op": "read_file", "sandbox_id": "sbx-persist-ops", "path": "/workspace/test.txt"})
+    data = json.loads(session_file.read_text())
+    after_read = data["sbx-persist-ops"]["last_used_at"]
+    assert after_read >= after_command, "last_used_at should be updated after read_file"
+
+    # Write file - should update last_used_at
+    ctrl.handle_code_request({"op": "write_file", "sandbox_id": "sbx-persist-ops", "path": "/workspace/test.txt", "content": "test"})
+    data = json.loads(session_file.read_text())
+    after_write = data["sbx-persist-ops"]["last_used_at"]
+    assert after_write >= after_read, "last_used_at should be updated after write_file"

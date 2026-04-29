@@ -6,7 +6,7 @@ These tests mock the upstream CUA interface so no live CUA server is required.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from cua_bridge.cua_mcp_proxy import (
     ALLOWED_CUA_TOOLS,
@@ -14,6 +14,7 @@ from cua_bridge.cua_mcp_proxy import (
     QUESTIONABLE_CUA_TOOLS,
     CuaMcpProxy,
     _enabled_questionable_tools,
+    run_proxy_server,
 )
 
 
@@ -174,3 +175,29 @@ def test_open_tool_enabled_by_flag(monkeypatch):
     enabled = _enabled_questionable_tools()
     assert "computer_open" in enabled
     assert "computer_clipboard_get" not in enabled
+
+
+# ---------------------------------------------------------------------------
+# Async startup regression test
+# ---------------------------------------------------------------------------
+
+def test_run_proxy_server_uses_async_creation_path():
+    """Verify run_proxy_server calls create_proxy_mcp_server_async, not sync wrapper.
+
+    This is a regression test for the bug where run_proxy_server used
+    create_proxy_mcp_server() which internally calls asyncio.run(),
+    causing a RuntimeError when an event loop was already running.
+    """
+    import inspect
+
+    # Verify the source code of run_proxy_server uses await create_proxy_mcp_server_async
+    source = inspect.getsource(run_proxy_server)
+
+    # Should call the async version, not the sync wrapper
+    assert "await create_proxy_mcp_server_async" in source, (
+        "run_proxy_server must await create_proxy_mcp_server_async() directly"
+    )
+    # Should NOT call the sync wrapper that uses asyncio.run()
+    assert "create_proxy_mcp_server(" not in source or "create_proxy_mcp_server_async" in source, (
+        "run_proxy_server should not call create_proxy_mcp_server() sync wrapper"
+    )

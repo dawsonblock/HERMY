@@ -29,6 +29,7 @@ Treat those directories as upstream snapshots. HERMY packaging only installs
 the local integration packages:
 
 - `cube_bridge`
+- `cua_bridge`
 - `controller`
 
 Hermes can be run from the vendored source tree or installed separately. CUA
@@ -101,6 +102,7 @@ The install exposes:
 
 ```bash
 hermy-cube-mcp
+hermy-cua-mcp
 ```
 
 The doctor is intentionally kept as a standalone source script:

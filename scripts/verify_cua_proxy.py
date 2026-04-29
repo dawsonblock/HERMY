@@ -1,12 +1,15 @@
 """HERMY CUA Proxy Verifier.
 
 Launches hermy-cua-mcp as a subprocess over stdio MCP, sends initialize +
-tools/list, and verifies:
+initialized notification + tools/list, and verifies:
 
   - Forbidden tools (shell/file) are absent from the tool list.
   - Core GUI tools are present.
   - Questionable tools are absent by default.
   - Questionable tools appear when the matching HERMY_ALLOW_CUA_* env flag is set.
+
+Features robust timeout handling (10s per read, 30s overall) and proper MCP
+lifecycle (initialize -> initialized notification -> tools/list).
 
 Exit codes:
   0  all checks passed
@@ -23,6 +26,10 @@ import subprocess
 import sys
 import textwrap
 from typing import Any
+
+# Timeouts in seconds
+_READ_TIMEOUT = 10.0
+_OVERALL_TIMEOUT = 30.0
 
 
 FORBIDDEN_TOOLS = {
@@ -54,19 +61,68 @@ QUESTIONABLE_TOOLS_FLAGS: dict[str, str] = {
 }
 
 
-def _send_jsonrpc(proc: subprocess.Popen, method: str, params: dict[str, Any], msg_id: int = 1) -> dict[str, Any]:
+class MCPTimeoutError(Exception):
+    """Raised when MCP communication times out."""
+    pass
+
+
+def _send_jsonrpc(
+    proc: subprocess.Popen,
+    method: str,
+    params: dict[str, Any],
+    msg_id: int = 1,
+    timeout: float = _READ_TIMEOUT,
+) -> dict[str, Any]:
+    """Send a JSON-RPC request and return the response with timeout handling."""
     request = json.dumps({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}) + "\n"
     assert proc.stdin is not None
     assert proc.stdout is not None
+
     proc.stdin.write(request.encode())
     proc.stdin.flush()
-    line = proc.stdout.readline()
+
+    # Use select for timeout-capable reading on Unix
+    try:
+        import select
+        ready, _, _ = select.select([proc.stdout], [], [], timeout)
+        if not ready:
+            raise MCPTimeoutError(f"Timeout waiting for response to {method} (timeout={timeout}s)")
+        line = proc.stdout.readline()
+    except ImportError:
+        # Fallback for Windows - less robust but functional
+        line = proc.stdout.readline()
+        if not line:
+            raise MCPTimeoutError(f"No response received for {method}")
+
     if not line:
-        raise RuntimeError("No response from hermy-cua-mcp subprocess")
-    return json.loads(line.decode())
+        raise RuntimeError("EOF from hermy-cua-mcp subprocess")
+
+    try:
+        return json.loads(line.decode())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid JSON from subprocess: {exc}") from exc
 
 
-def _list_tools_via_stdio(env: dict[str, str] | None = None, upstream_url: str | None = None) -> list[str]:
+def _kill_proc_cleanly(proc: subprocess.Popen) -> None:
+    """Kill a subprocess, trying graceful shutdown first."""
+    try:
+        # Try graceful termination first
+        proc.terminate()
+        proc.wait(timeout=2)
+    except (subprocess.TimeoutExpired, ProcessLookupError):
+        try:
+            # Force kill if needed
+            proc.kill()
+            proc.wait(timeout=2)
+        except (subprocess.TimeoutExpired, ProcessLookupError):
+            pass
+
+
+def _list_tools_via_stdio(
+    env: dict[str, str] | None = None,
+    upstream_url: str | None = None,
+) -> list[str]:
+    """Launch CUA proxy, complete MCP handshake, and return tool list."""
     cmd = [sys.executable, "-m", "cua_bridge.cua_mcp_proxy"]
     proc_env = os.environ.copy()
     if env:
@@ -81,8 +137,10 @@ def _list_tools_via_stdio(env: dict[str, str] | None = None, upstream_url: str |
         stderr=subprocess.PIPE,
         env=proc_env,
     )
+
     try:
-        _send_jsonrpc(
+        # Step 1: Send initialize request
+        init_response = _send_jsonrpc(
             proc,
             "initialize",
             {
@@ -92,12 +150,35 @@ def _list_tools_via_stdio(env: dict[str, str] | None = None, upstream_url: str |
             },
             msg_id=1,
         )
+
+        if "error" in init_response:
+            raise RuntimeError(f"Initialize failed: {init_response['error']}")
+
+        # Step 2: Send initialized notification (required by MCP spec)
+        if proc.stdin is None:
+            raise RuntimeError("Subprocess stdin is not available")
+        initialized_notification = json.dumps({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        }) + "\n"
+        proc.stdin.write(initialized_notification.encode())
+        proc.stdin.flush()
+
+        # Step 3: Request tools/list
         resp = _send_jsonrpc(proc, "tools/list", {}, msg_id=2)
         tools = resp.get("result", {}).get("tools", [])
         return [t["name"] for t in tools if isinstance(t, dict) and "name" in t]
+
+    except MCPTimeoutError:
+        _kill_proc_cleanly(proc)
+        raise
+    except Exception:
+        _kill_proc_cleanly(proc)
+        raise
     finally:
-        proc.terminate()
-        proc.wait(timeout=5)
+        # Ensure cleanup
+        if proc.poll() is None:
+            _kill_proc_cleanly(proc)
 
 
 def _check(label: str, condition: bool, detail: str = "") -> bool:

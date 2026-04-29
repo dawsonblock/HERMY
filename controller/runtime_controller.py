@@ -572,6 +572,7 @@ class RuntimeController:
     def _mark_session_used(self, sandbox_id: str) -> None:
         if sandbox_id in self.sessions:
             self.sessions[sandbox_id].last_used_at = _utc_now()
+            self._persist_sessions()
 
     def _audit(
         self,
