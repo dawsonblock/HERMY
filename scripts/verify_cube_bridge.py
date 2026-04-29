@@ -111,7 +111,7 @@ class LiveVerifier:
             if not response.get("ok"):
                 return self.check("create", False, response.get("error", "unknown error"))
 
-            self.sandbox_id = response.get("result", {}).get("sandbox_id")
+            self.sandbox_id = response.get("sandbox_id")
             if not self.sandbox_id:
                 return self.check("create", False, "no sandbox_id in response")
 
@@ -133,7 +133,7 @@ class LiveVerifier:
             if not response.get("ok"):
                 return self.check("run_command", False, response.get("error", "unknown error"))
 
-            stdout = response.get("result", {}).get("stdout", "")
+            stdout = response.get("stdout", "")
             expected = "hello"
             if stdout.strip() == expected:
                 return self.check("run_command", True, f"stdout='{stdout.strip()}'")
@@ -175,7 +175,7 @@ class LiveVerifier:
             if not response.get("ok"):
                 return self.check("read_file", False, response.get("error", "unknown error"))
 
-            content = response.get("result", {}).get("content", "")
+            content = response.get("content", "")
             expected = "HERMY_PROBE_CONTENT"
             if content == expected:
                 return self.check("read_file", True, "content matches")
@@ -198,7 +198,7 @@ class LiveVerifier:
             if not response.get("ok"):
                 return self.check("run_python", False, response.get("error", "unknown error"))
 
-            stdout = response.get("result", {}).get("stdout", "")
+            stdout = response.get("stdout", "")
             expected = "2"
             if stdout.strip() == expected:
                 return self.check("run_python", True, f"stdout='{stdout.strip()}'")
@@ -282,14 +282,24 @@ class LiveVerifier:
             self.save_artifacts()
             return 2
 
-        # Run all verification steps
-        self.verify_create()
-        self.verify_run_command()
-        self.verify_write_file()
-        self.verify_read_file()
-        self.verify_run_python()
-        self.verify_denied_passwd_write()
-        self.verify_destroy()
+        # Fail fast if create fails - dependent checks need a sandbox
+        if not self.verify_create():
+            self.save_artifacts()
+            return 1
+
+        # Run dependent checks with cleanup safety
+        try:
+            self.verify_run_command()
+            self.verify_write_file()
+            self.verify_read_file()
+            self.verify_run_python()
+            self.verify_denied_passwd_write()
+        finally:
+            # Always attempt destroy if we created a sandbox
+            if self.sandbox_id:
+                self.verify_destroy()
+
+        # Check for session leaks after cleanup
         self.verify_no_leaked_sessions()
 
         self.save_artifacts()
@@ -307,6 +317,12 @@ class LiveVerifier:
 
 
 def main() -> None:
+    # Set session file to artifact path to avoid dirtying repo root
+    os.environ.setdefault(
+        "HERMY_SESSION_FILE",
+        str(ARTIFACTS_DIR / "verify_cube_bridge_sessions.json")
+    )
+
     parser = argparse.ArgumentParser(
         description="HERMY live Cube bridge verification."
     )

@@ -76,8 +76,8 @@ HERMY currently provides:
 - Session persistence: `RuntimeController` writes `hermy_sessions.json` on
   every session change and recovers sessions (marked stale) on restart.
 - `scripts/verify_cua_proxy.py`: CUA proxy tool-filter verification script.
-- `scripts/verify_cube_bridge.py`: Cube bridge live verification stub (pending
-  full implementation — see ROADMAP in that file).
+- `scripts/verify_cube_bridge.py`: Opt-in live Cube bridge verifier. Requires
+  a real Cube/E2B-compatible backend and valid `CUBE_TEMPLATE_ID`.
 
 HERMY does not provide:
 
@@ -402,9 +402,11 @@ See `controller/policy.py` docstring on `validate_workspace_path` and
 - **CUA tool schemas:** Proxy tool argument schemas are `**kwargs`. Upstream
   descriptions are injected as docstrings only. FastMCP does not support
   dynamic `inputSchema` injection.
-- **Live Cube verification:** `scripts/verify_cube_bridge.py` is a stub.
-  Use `python scripts/hermy_doctor.py --live-cube-smoke` for the existing
-  opt-in smoke test.
+- **Live Cube/E2B infrastructure required:** Full Cube operations require a
+  real Linux/KVM Cube deployment or E2B-compatible API endpoint. The
+  `verify_cube_bridge.py` script tests against live infrastructure.
+- **Live CUA infrastructure required:** `verify_cua_proxy.py` checks tool lists
+  but does not perform live GUI operations without a running CUA MCP server.
 - **No per-user authorization layer.**
 - **No sandbox quota system.**
 - **No supervisor/launcher** — start CUA, Cube, and Hermes manually.
