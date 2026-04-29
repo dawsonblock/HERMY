@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import approval_ledger, event_logger
 
 _CONTROL_OPERATOR_PATTERN = re.compile(r"[;&|<>`]|[$][(]|\n|\r")
 _DANGEROUS_FLAG_TOKENS = {"--no-preserve-root", "-delete"}
@@ -183,9 +184,9 @@ def validate_command(
     Shell control operators require explicit approval with a valid approval_id,
     and destructive commands remain blocked even when approved.
 
-    Note: approval_id currently proves only that a non-empty string was
-    supplied. A durable ledger that binds an approval_id to a specific
-    user, action, and expiry is pending. See controller/approval_ledger.py.
+    When HERMY_APPROVAL_LEDGER_FILE is set, approval_id is validated against
+    the durable ledger (single-use, expiry-checked). When not set, approval_id
+    proves only string existence for backward compatibility.
     """
     if isinstance(command, list):
         if not command:
@@ -206,6 +207,20 @@ def validate_command(
             return PolicyDecision(False, "shell control operators are not allowed without approval")
         if not approval_id or not str(approval_id).strip():
             return PolicyDecision(False, "shell control operators require a valid approval_id")
+
+        # Validate against ledger if configured
+        ledger = approval_ledger.get_default_ledger()
+        if ledger is not None:
+            if not ledger.is_valid(approval_id, command):
+                return PolicyDecision(
+                    False,
+                    "approval_id is invalid, expired, or was already used"
+                )
+            # Consume the approval (single-use)
+            try:
+                ledger.consume(approval_id)
+            except Exception as exc:
+                return PolicyDecision(False, f"could not consume approval: {exc}")
 
     try:
         parts = shlex.split(command, posix=True)

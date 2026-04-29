@@ -53,8 +53,10 @@ def test_validate_command_approved_shell_requires_approval_id():
     assert not policy.validate_command("echo ok && whoami", approved=True, approval_id=None).allowed
 
 
-def test_validate_command_approved_shell_with_approval_id_allows():
+def test_validate_command_approved_shell_with_approval_id_allows(monkeypatch):
     # approved=True with non-empty approval_id -> allow harmless composition
+    # Ensure ledger is not configured for backward compatibility test
+    monkeypatch.delenv("HERMY_APPROVAL_LEDGER_FILE", raising=False)
     assert policy.validate_command("echo ok && whoami", approved=True, approval_id="app-123").allowed
 
 

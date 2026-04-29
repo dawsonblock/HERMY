@@ -162,6 +162,43 @@ scripts/start_cube_api.sh
 You still need CubeMaster, Cubelet, networking, templates, and KVM for real
 sandbox execution.
 
+### Approval Ledger (Optional)
+
+HERMY supports durable, single-use command approvals to prevent replay attacks.
+When enabled, shell control operators (|, &&, ||, etc.) require a valid
+approval_id that is consumed on first use and expires after a set duration.
+
+Enable the ledger:
+
+```bash
+export HERMY_APPROVAL_LEDGER_FILE=/var/lib/hermy/approvals.jsonl
+```
+
+The ledger file is created automatically in JSONL format. Each entry contains:
+- `id`: The approval_id
+- `action`: The approved command
+- `actor`: Who requested approval
+- `created_at`: Timestamp when recorded
+- `expires_at`: Expiry timestamp (optional)
+- `consumed`: Boolean flag for single-use enforcement
+
+Record an approval (typically done by an external approval workflow):
+
+```python
+from controller.approval_ledger import get_default_ledger
+ledger = get_default_ledger()
+if ledger:
+    ledger.record(
+        approval_id="uuid-here",
+        action="ls -la | grep foo",
+        actor="user@example.com",
+        expires_at="2026-01-01T00:00:00Z"
+    )
+```
+
+When `HERMY_APPROVAL_LEDGER_FILE` is not set, `approval_id` proves only string
+existence for backward compatibility.
+
 ## Run Doctor
 
 After installing dependencies and exporting Cube variables:
@@ -391,9 +428,10 @@ See `controller/policy.py` docstring on `validate_workspace_path` and
 
 ## Known Limitations
 
-- **Approval ledger:** `approval_id` proves only string existence. A durable
-  ledger binding an approval to a user, action, and expiry is pending. See
-  `controller/approval_ledger.py`.
+- **Approval ledger:** File-based durable ledger available via
+  `HERMY_APPROVAL_LEDGER_FILE`. When set, shell control operator approvals
+  are single-use and expire after configurable duration. When not set,
+  `approval_id` proves only string existence (backward compatibility).
 - **Session persistence:** Sessions are persisted to `hermy_sessions.json`
   and recovered as `stale` on restart. Live re-validation against the Cube
   API is not performed automatically.

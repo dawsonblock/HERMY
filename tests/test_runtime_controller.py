@@ -252,6 +252,8 @@ def test_approved_shell_without_approval_id_is_rejected(monkeypatch):
 
 def test_approved_shell_with_approval_id_allows_command(monkeypatch):
     """approved_shell=True with valid approval_id allows harmless shell composition."""
+    # Ensure ledger is not configured for backward compatibility test
+    monkeypatch.delenv("HERMY_APPROVAL_LEDGER_FILE", raising=False)
     cube = FakeCubeClient()
     controller = _controller(monkeypatch, cube)
     controller.handle_code_request({"op": "create", "template_id": "tpl-1"})
@@ -272,6 +274,8 @@ def test_approved_shell_with_approval_id_allows_command(monkeypatch):
 
 def test_approval_id_is_included_in_audit_payload(monkeypatch):
     """approval_id is included in audit payload when approved shell is used."""
+    # Ensure ledger is not configured for backward compatibility test
+    monkeypatch.delenv("HERMY_APPROVAL_LEDGER_FILE", raising=False)
     events = []
 
     def capture_event(*args, **kwargs):
